@@ -1,0 +1,6 @@
+{
+    "extends": [
+        "github>alikuxac/renovate",
+        "github>alikuxac/renovate:fully-automated"
+    ]
+}

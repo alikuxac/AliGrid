@@ -1,0 +1,13 @@
+name = "aligrid-server"
+main = "src/index.ts"
+compatibility_date = "2024-11-20"
+
+[[kv_namespaces]]
+binding = "ALIGRID_KV"
+id = "ALIGRID_KV_ID"
+preview_id = "ALIGRID_KV_ID_PREVIEW"
+
+[[d1_databases]]
+binding = "ALIGRID_DB"
+database_name = "aligrid-db"
+database_id = "ALIGRID_DB_ID"

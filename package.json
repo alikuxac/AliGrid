@@ -1,0 +1,18 @@
+{
+    "name": "aligrid",
+    "version": "0.0.1",
+    "private": true,
+    "scripts": {
+        "build": "turbo run build",
+        "dev": "turbo run dev",
+        "lint": "turbo run lint",
+        "format": "prettier --write \"**/*.{js,jsx,ts,tsx,md,json}\""
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {},
+    "devDependencies": {
+        "turbo": "^2.1.0"
+    }
+}

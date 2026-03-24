@@ -1,0 +1,12 @@
+node_modules/
+.turbo/
+dist/
+build/
+.env
+*.local
+.eslintcache
+.DS_Store
+.wrangler/
+**/src-tauri/target/
+
+PLAN.md

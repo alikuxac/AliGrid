@@ -1,0 +1,22 @@
+{
+    "name": "@aligrid/ui",
+    "version": "1.0.0",
+    "description": "Giao diện dùng chung",
+    "main": "./src/index.ts",
+    "types": "./src/index.ts",
+    "scripts": {
+        "build": "tsc",
+        "lint": "eslint . --ext .ts"
+    },
+    "dependencies": {
+        "tailwindcss": "^3.4.0",
+        "postcss": "^8.4.0",
+        "autoprefixer": "^10.4.0",
+        "lucide-react": "^0.344.0",
+        "clsx": "^2.1.0",
+        "tailwind-merge": "^2.2.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.0.0"
+    }
+}
