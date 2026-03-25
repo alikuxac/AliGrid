@@ -43,9 +43,10 @@ export const pushToEdge = (ctx: TickContext, edge: Edge, rt: ResourceType, amt: 
     const maxPush = Decimal.max(new Decimal(0), capPerSec.times(ctx.dtSeconds).minus(alreadyPushedAll));
 
     const targetNode = ctx.nodesById[edge.target];
-    const maxBuf = targetNode?.type === 'sink'
+    const isSink = targetNode?.type === 'sink';
+    const maxBuf = isSink
         ? new Decimal(Infinity)
-        : (targetNode?.data?.maxBuffer ? new Decimal(targetNode.data.maxBuffer) : new Decimal(100));
+        : (targetNode?.data?.maxBuffer ? new Decimal(targetNode.data.maxBuffer) : new Decimal(5000));
 
     const bufObj = targetNode?.data?.inputBuffer || {};
     const currentInBufAll = Object.values(bufObj).reduce((sum: Decimal, v) => sum.plus(new Decimal(v as any || 0)), new Decimal(0));
@@ -53,7 +54,7 @@ export const pushToEdge = (ctx: TickContext, edge: Edge, rt: ResourceType, amt: 
         ? Object.values(ctx.nodeIncoming[edge.target]).reduce((s: Decimal, v) => s.plus(v as Decimal), new Decimal(0))
         : new Decimal(0);
 
-    const leftoverSpace = Decimal.max(0, maxBuf.minus(currentInBufAll).minus(incomingAll));
+    const leftoverSpace = isSink ? new Decimal(Infinity) : Decimal.max(0, maxBuf.minus(currentInBufAll).minus(incomingAll));
     const actualPush = Decimal.min(amt, Decimal.min(maxPush, leftoverSpace));
 
     const isBottleneck = maxPush.lt(amt) && maxPush.lte(leftoverSpace);

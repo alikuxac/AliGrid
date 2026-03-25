@@ -51,9 +51,17 @@ export const createEdgeSlice = (set: any, get: any) => ({
     },
 
     onConnect: (connection: Connection) => {
-        const nodes = get().nodes;
         const edges = get().edges;
+        const exists = edges.some(
+            (e: Edge) =>
+                e.source === connection.source &&
+                e.sourceHandle === connection.sourceHandle &&
+                e.target === connection.target &&
+                e.targetHandle === connection.targetHandle
+        );
+        if (exists) return;
 
+        const nodes = get().nodes;
         const targetNode = nodes.find((n: any) => n.id === connection.target);
         const sourceNode = nodes.find((n: any) => n.id === connection.source);
 

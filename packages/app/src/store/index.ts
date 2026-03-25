@@ -14,6 +14,10 @@ export const useStore = create<RFState>()((set, get) => ({
     ...createTickSlice(set, get),
     isViewOnly: false,
     setIsViewOnly: (isViewOnly: boolean) => set({ isViewOnly }),
+    activeTab: 'nodes',
+    setActiveTab: (activeTab) => set({ activeTab }),
+    isSidebarOpen: true,
+    setIsSidebarOpen: (isSidebarOpen) => set({ isSidebarOpen }),
 }));
 
 export * from './types';

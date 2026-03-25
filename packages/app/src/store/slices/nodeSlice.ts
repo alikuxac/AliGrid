@@ -8,6 +8,7 @@ const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://loca
 
 export const createNodeSlice = (set: any, get: any) => ({
     nodes: [],
+    nodeStats: {},
     nodeTemplates: [],
 
     loadNodeTemplates: async () => {
@@ -74,7 +75,8 @@ export const createNodeSlice = (set: any, get: any) => ({
         if (!node || !node.type) return;
 
         const level = node.data.level || 0;
-        const cost = getUpgradeCost(node.type, level);
+        const template = get().nodeTemplates.find((t: any) => t.id === node.type);
+        const cost = getUpgradeCost(node.type, level, template);
 
         if (!get().canAfford(cost)) {
             alert("Not enough materials to upgrade!");
@@ -92,25 +94,47 @@ export const createNodeSlice = (set: any, get: any) => ({
                         nextLevel = 0;
                         nextTier += 1;
                     }
-                    let baseRate = new Decimal(1);
-                    if (n.type === 'waterGenerator' || n.type === 'lavaPump') baseRate = new Decimal(1.0);
-                    else if (n.type === 'ironGenerator') baseRate = new Decimal(1.0);
-                    else if (n.type === 'copperGenerator') baseRate = new Decimal(1.0);
-                    else if (n.type === 'coalGenerator') baseRate = new Decimal(1);
-                    else if (n.type === 'cobbleGen') baseRate = new Decimal(1.0);
-                    else if (n.type === 'downloader') baseRate = new Decimal(1.0);
-                    else if (n.type === 'powerReceiver') baseRate = new Decimal(2.0);
 
-                    let rate = baseRate.times(Math.pow(2, nextLevel)).round();
-                    if (n.type === 'cobbleGen') {
-                        rate = new Decimal(Math.pow(2, Math.max(0, nextLevel - 1)));
+                    let rate: Decimal;
+                    const benefitConfig = template?.upgrade_benefit_config ?
+                        (typeof template.upgrade_benefit_config === 'string' ? JSON.parse(template.upgrade_benefit_config) : template.upgrade_benefit_config)
+                        : null;
+
+                    if (benefitConfig) {
+                        const initial = new Decimal(template.initial_rate || 1);
+                        if (benefitConfig.type === 'exponential') {
+                            const factor = benefitConfig.factor || 2;
+                            rate = initial.times(Math.pow(factor, nextLevel)).round();
+                        } else if (benefitConfig.type === 'linear') {
+                            const add = benefitConfig.amount || 1;
+                            rate = initial.plus(new Decimal(add).times(nextLevel));
+                        } else {
+                            // Default fallback
+                            rate = initial.times(Math.pow(2, nextLevel)).round();
+                        }
+                    } else {
+                        // Legacy hardcoded logic
+                        let baseRate = new Decimal(1);
+                        if (n.type === 'waterGenerator' || n.type === 'lavaPump') baseRate = new Decimal(1.0);
+                        else if (n.type === 'ironGenerator') baseRate = new Decimal(1.0);
+                        else if (n.type === 'copperGenerator') baseRate = new Decimal(1.0);
+                        else if (n.type === 'coalGenerator') baseRate = new Decimal(1);
+                        else if (n.type === 'cobbleGen') baseRate = new Decimal(1.0);
+                        else if (n.type === 'downloader') baseRate = new Decimal(1.0);
+                        else if (n.type === 'powerReceiver') baseRate = new Decimal(2.0);
+
+                        rate = baseRate.times(Math.pow(2, nextLevel)).round();
+                        if (n.type === 'cobbleGen') {
+                            rate = new Decimal(Math.pow(2, Math.max(0, nextLevel - 1)));
+                        }
                     }
+
                     let maxBuffer = n.data.maxBuffer;
                     if (n.type === 'accumulator') {
                         const baseMax = new Decimal(5000);
                         maxBuffer = baseMax.times(Math.pow(2, nextLevel)).toString();
                     }
-                    return { ...n, data: { ...n.data, level: nextLevel, tier: nextTier, outputRate: rate, maxBuffer } };
+                    return { ...n, data: { ...n.data, level: nextLevel, tier: nextTier, outputRate: rate.toString(), maxBuffer } };
                 }
                 return n;
             })

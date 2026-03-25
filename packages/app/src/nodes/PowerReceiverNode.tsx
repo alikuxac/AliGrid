@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { useStore } from '../store';
 import { RESOURCE_REGISTRY, Decimal } from '@aligrid/engine';
@@ -12,7 +12,7 @@ export interface PowerReceiverNodeProps {
     };
 }
 
-export const PowerReceiverNode: React.FC<PowerReceiverNodeProps> = ({ id, data }) => {
+export const PowerReceiverNode: React.FC<PowerReceiverNodeProps> = memo(({ id, data }) => {
     const rate = data?.outputRate
         ? (typeof data.outputRate === 'string' ? new Decimal(data.outputRate) : data.outputRate)
         : new Decimal(2); // Higher default rate for power
@@ -72,4 +72,4 @@ export const PowerReceiverNode: React.FC<PowerReceiverNodeProps> = ({ id, data }
             />
         </div>
     );
-};
+});

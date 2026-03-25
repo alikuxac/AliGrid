@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, { Background, Controls, ReactFlowProvider, ReactFlowInstance, Connection as RFConnection, MiniMap, Node, Edge, NodeChange, EdgeChange, XYPosition } from 'reactflow';
 import 'reactflow/dist/style.css';
+import './index.css';
 
 import { ResourceGeneratorNode } from './nodes/ResourceGeneratorNode';
 import { StorageNode } from './nodes/StorageNode';
@@ -68,7 +69,9 @@ const getId = () => `dndnode_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 function AppRenderer() {
     const reactFlowWrapper = useRef<HTMLDivElement>(null);
     const [reactFlowInstance, setReactFlowInstance] = React.useState<ReactFlowInstance | null>(null);
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const isSidebarOpen = useStore((state) => (state as any).isSidebarOpen ?? true);
+    const setIsSidebarOpen = useStore((state) => (state as any).setIsSidebarOpen);
+    const setActiveTab = useStore((state) => (state as any).setActiveTab);
     const [tickRate, setTickRate] = useState(50);
     const [tickCount, setTickCount] = useState(0);
     const workerRef = useRef<Worker | null>(null);
@@ -96,7 +99,6 @@ function AppRenderer() {
 
     const globalStats = useStore((state) => state.globalStats) || { production: {}, consumption: {}, cloudProduction: {}, cloudConsumption: {} };
     const decCap = new Decimal(5000).times(Math.pow(2, (cloudLevel || 1) - 1));
-    const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
     const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
 
@@ -221,7 +223,7 @@ function AppRenderer() {
         if (!sourceNode || !targetNode) return false;
 
         const isAntenna = targetNode.type === 'antenna';
-        const isPowerNode = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver'].includes(targetNode.type || '');
+        const isPowerNode = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver', 'hydroGenerator'].includes(targetNode.type || '');
         const handleOccupied = edges.find(
             (e) => e.target === connection.target && e.targetHandle === connection.targetHandle
         );
@@ -229,41 +231,57 @@ function AppRenderer() {
 
         // --- Wired Power Grid Rules ---
         if (connection.targetHandle === 'electricity') {
-            const isSourcePowerHub = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver'].includes(sourceNode.type || '');
+            const isSourcePowerHub = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver', 'hydroGenerator'].includes(sourceNode.type || '');
             if (!isSourcePowerHub) return false; // Machines can ONLY wire to Power Poles/Hubs!
-        }
 
-        const isGenerator = sourceNode.type && (sourceNode.type.toLowerCase().includes('generator') || sourceNode.type.toLowerCase().includes('plant') || sourceNode.type === 'lavaPump');
-        const isConsumer = targetNode.data?.powerConsumption && new Decimal(targetNode.data.powerConsumption).gt(0);
-        if (isGenerator && isConsumer) {
-            return false; // Direct Generator -> Client is FORBIDDEN! Must go through a Pole!
+            const isGenerator = sourceNode.type && (sourceNode.type.toLowerCase().includes('generator') || sourceNode.type.toLowerCase().includes('plant') || sourceNode.type === 'lavaPump');
+            const isConsumer = targetNode.data?.powerConsumption && new Decimal(targetNode.data.powerConsumption).gt(0);
+            if (isGenerator && isConsumer) {
+                return false; // Direct Generator -> Client is FORBIDDEN! Must go through a Pole!
+            }
         }
         // --------------------------------
 
         let sourceResourceType: string | undefined = undefined;
-        if (sourceNode.data?.resourceType) {
-            sourceResourceType = sourceNode.data.resourceType;
-        } else if (sourceNode.data?.recipe?.outputType) {
-            sourceResourceType = sourceNode.data.recipe.outputType;
-        } else if (sourceNode.data?.template?.output_type) {
-            sourceResourceType = sourceNode.data.template.output_type;
-        } else if (sourceNode.data?.template?.resource_type) {
-            sourceResourceType = sourceNode.data.template.resource_type;
-        } else if (sourceNode.type === 'merger' && sourceNode.data?.lockedResourceType) {
-            sourceResourceType = sourceNode.data.lockedResourceType;
-        } else if (sourceNode.type === 'storage' && sourceNode.data?.lockedResourceType) {
-            sourceResourceType = sourceNode.data.lockedResourceType;
+        const isGenericHandle = ['source', 'output', 'target', 'input', 'fuel'].includes(connection.sourceHandle || '') ||
+            connection.sourceHandle?.startsWith('output-') ||
+            connection.sourceHandle?.startsWith('input-');
+
+        if (connection.sourceHandle && !isGenericHandle) {
+            sourceResourceType = connection.sourceHandle;
+        } else {
+            const potential = sourceNode.data?.lockedResourceType ||
+                sourceNode.data?.resourceType ||
+                sourceNode.data?.recipe?.outputType ||
+                sourceNode.data?.template?.output_type ||
+                sourceNode.data?.template?.resource_type;
+            if (potential && String(potential).trim() !== "") {
+                sourceResourceType = potential;
+            }
+
+            // --- Dynamic Logistics Inference ---
+            // If source is a carrier (Splitter/Merger/Storage) and has no primary type, 
+            // check its incoming connections to see what it's carrying.
+            const isLogisticsNode = ['splitter', 'merger', 'storage', 'downloader', 'antenna'].includes((sourceNode.type || '').toLowerCase());
+            if (isLogisticsNode && !sourceResourceType) {
+                const inEdge = edges.find(e => e.target === sourceNode.id);
+                if (inEdge) {
+                    // We can't easily recurse far, but we can check the color or explicit data of the input edge
+                    sourceResourceType = (inEdge.data as any)?.resourceType;
+                }
+            }
         }
 
-        if (targetNode.type === 'merger') { // removed storage from lock enforcement
+        if ((targetNode.type || '').toLowerCase() === 'merger') {
             const locked = targetNode.data?.lockedResourceType;
             if (locked && sourceResourceType && sourceResourceType !== locked) {
                 return false;
             }
         }
 
-        const isDefaultHandle = !connection.targetHandle || connection.targetHandle === 'target' || connection.targetHandle === 'source' || connection.targetHandle === 'input' || connection.targetHandle === 'output' || connection.targetHandle === 'fuel';
-        const isListHandleNode = ['antenna', 'merger', 'splitter', 'powerTransmitter', 'powerPole', 'accumulator'].includes(targetNode.type || '');
+        const isDefaultHandle = !connection.targetHandle || connection.targetHandle === 'target' || connection.targetHandle === 'source' || connection.targetHandle === 'input' || connection.targetHandle === 'output' || connection.targetHandle === 'fuel' || connection.targetHandle?.startsWith('input-');
+        const targetType = (targetNode.type || '').toLowerCase();
+        const isListHandleNode = ['antenna', 'merger', 'splitter', 'powertransmitter', 'powerpole', 'accumulator'].includes(targetType);
 
         if (!isDefaultHandle && sourceResourceType && !isListHandleNode) {
             // Check specific handle ID for multiple-handle support
@@ -527,7 +545,10 @@ function AppRenderer() {
                     <div style={{ background: '#374151', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span>{formatNumber(globalTotal)} / {formatNumber(globalCap)}</span>
                         <button
-                            onClick={() => setIsDetailsOpen(!isDetailsOpen)}
+                            onClick={() => {
+                                if (setActiveTab) setActiveTab('inventory');
+                                if (setIsSidebarOpen) setIsSidebarOpen(true);
+                            }}
                             style={{ background: '#4b5563', border: 'none', color: 'white', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}
                         >
                             Details
@@ -594,86 +615,7 @@ function AppRenderer() {
             </div>
 
             {/* Cloud Details Modal Popover */}
-            {isDetailsOpen && (
-                <div style={{
-                    position: 'absolute', top: '50px', left: '20px', width: '320px',
-                    background: 'rgba(31, 41, 55, 0.95)', border: '1px solid #4b5563', borderRadius: '8px',
-                    backdropFilter: 'blur(8px)', padding: '15px', zIndex: 20,
-                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.4)'
-                }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', alignItems: 'center', borderBottom: '1px solid #374151', paddingBottom: '5px' }}>
-                        <span style={{ color: 'white', fontWeight: 'bold', fontSize: '13px' }}>Storage Capacities</span>
-                        <button onClick={() => setIsDetailsOpen(false)} style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}>✕</button>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {Object.values(RESOURCE_REGISTRY).filter(r => r.isUploadAvailable).map((meta) => {
-                            const res = meta.id;
-                            const cur = cloudStorage[res] || new Decimal(0);
-                            const percent = Math.min(100, (cur.toNumber() / decCap.toNumber()) * 100);
 
-                            return (
-                                <div key={res} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#f3f4f6' }}>
-                                            <span>{meta.icon}</span>
-                                            <span>{meta.label}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ fontSize: '11px', color: '#9ca3af' }}>{formatNumber(cur)}/{formatNumber(decCap)}</span>
-                                        </div>
-                                    </div>
-                                    <div style={{ height: '4px', background: '#374151', borderRadius: '2px', overflow: 'hidden' }}>
-                                        <div style={{ width: `${percent}%`, height: '100%', background: meta.color || '#3b82f6', borderRadius: '2px' }} />
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginTop: '1px' }}>
-                                        <span style={{ color: '#10b981' }}>+{((globalStats)?.cloudProduction?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
-                                        <span style={{ color: '#f87171' }}>-{((globalStats)?.cloudConsumption?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-
-                    {/* Level Upgrade Footer */}
-                    <div style={{ marginTop: '15px', paddingTop: '12px', borderTop: '1px solid #374151', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>Cloud Level: <b style={{ color: '#f8fafc' }}>{cloudLevel || 1}</b></span>
-                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>Per Item Cap: <b style={{ color: '#a5b4fc' }}>{formatNumber(decCap)}</b></span>
-                        </div>
-
-                        {/* Cost list */}
-                        <div style={{ padding: '6px 8px', background: '#11182760', border: '1px solid #374151', borderRadius: '4px', fontSize: '11px' }}>
-                            <div style={{ color: '#94a3b8', fontSize: '10px', marginBottom: '3px' }}>Cost to Upgrade Level:</div>
-                            {[
-                                { id: 'iron', label: 'Iron', icon: '⛏️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) },
-                                { id: 'copper', label: 'Copper', icon: '⚒️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) }
-                            ].map(item => {
-                                const cur = cloudStorage[item.id] || new Decimal(0);
-                                const isAffordable = cur.gte(item.cost);
-                                return (
-                                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', color: isAffordable ? '#10b981' : '#f87171', marginBottom: '2px' }}>
-                                        <span>{item.icon} {item.label}</span>
-                                        <span>{formatNumber(cur)}/{formatNumber(item.cost)}</span>
-                                    </div>
-                                )
-                            })}
-                        </div>
-
-                        <button
-                            onClick={() => upgradeCloudLevel()}
-                            style={{
-                                width: '100%', background: '#2563eb', border: 'none', color: 'white',
-                                borderRadius: '4px', padding: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
-                                transition: 'background 0.2s'
-                            }}
-                            onMouseOver={(e) => e.currentTarget.style.background = '#1d4ed8'}
-                            onMouseOut={(e) => e.currentTarget.style.background = '#2563eb'}
-                        >
-                            Upgrade Cloud Capacity
-                        </button>
-                    </div>
-                </div>
-            )}
 
             <div style={{ display: 'flex', flexGrow: 1, position: 'relative', overflow: 'hidden' }}>
                 <button
@@ -712,7 +654,11 @@ function AppRenderer() {
                         edgesFocusable={!isViewOnly}
                         edgeTypes={edgeTypes}
                         fitView
+                        minZoom={0.1}
+                        maxZoom={4}
                         onlyRenderVisibleElements={true}
+                        panOnScroll={true}
+                        selectionOnDrag={false}
                         style={{ background: '#0a0f1d' }}
                     >
                         <Background gap={16} size={1} color="#334155" />

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import { NodeTemplate } from '@aligrid/schema';
 import { RESOURCE_REGISTRY, NODE_COSTS, Decimal, getUpgradeCost } from '@aligrid/engine';
@@ -6,13 +6,14 @@ import { RESOURCE_REGISTRY, NODE_COSTS, Decimal, getUpgradeCost } from '@aligrid
 import { useStore } from '../store';
 import { formatNumber } from '../utils/formatter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
+import { RESOURCE_STATES } from '../store/constants';
 
 import type { NodeData, RecipeConfig, FlowEdgeData } from '../store/types';
 
 interface ExtendedTemplate extends NodeTemplate {
     maxBuffer?: string | number;
     resource_type?: string | null;
-    radius?: number | string;
+    radius?: number | null;
     recipes?: RecipeConfig[];
 }
 
@@ -23,7 +24,7 @@ export interface GenericNodeProps {
     selected?: boolean;
 }
 
-export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, selected }) => {
+export const GenericNode: React.FC<GenericNodeProps> = React.memo(({ id, type, data, selected }) => {
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const allEdges = useEdges();
@@ -86,6 +87,7 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
     }
 
     let renderedInputs = inputs;
+    const hasMultipleRecipes = isProcessor && recipes && Array.isArray(recipes) && recipes.length > 1;
     const isMultiInput = isProcessor && activeRecipe && activeRecipe.inputType.split(',').filter(Boolean).length > 1;
 
     const hasEdges = allEdges.some(e => e.target === id);
@@ -196,7 +198,13 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
                 {template.category === 'generator' && (
                     <div>
                         <span>Yield: </span>
-                        <b style={{ color: '#34d399' }}>{formatNumber(data?.outputRate ?? String(template.initial_rate || 0))}/s</b>
+                        <b style={{ color: '#34d399' }}>
+                            {formatNumber(data?.outputRate ?? String(template.initial_rate || 0))}
+                            {Number(data?.boost || 1) > 1 && (
+                                <span style={{ color: '#fb923c' }}> + {formatNumber(new Decimal(data?.outputRate || template.initial_rate || 0).times(Number(data!.boost) - 1))}</span>
+                            )}
+                            /s
+                        </b>
                     </div>
                 )}
 
@@ -224,7 +232,15 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
                             <span>⚡</span>
                             <span>Power Demand</span>
                         </div>
-                        <b style={{ color: '#fef08a' }}>{formatInputRate('electricity')} / {formatNumber(powerCons)} W/s</b>
+                        <b style={{ color: '#fef08a' }}>{formatInputRate('electricity')} / {formatNumber(powerCons.times(data?.boost || 1))} W/s</b>
+                    </div>
+                )}
+
+                {/* Amplifier Boosting Info */}
+                {type === 'amplifier' && (
+                    <div style={{ padding: '4px 8px', background: 'rgba(56, 189, 248, 0.05)', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '4px', fontSize: '9px', color: '#38bdf8', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>Boosting Machines:</span>
+                        <b style={{ color: '#7dd3fc' }}>{data?.boostedCount || 0}</b>
                     </div>
                 )}
 
@@ -242,168 +258,74 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
                                 </span>
                             )}
                         </div>
-                        {isMultiInput ? (
-                            <>
-                                {/* Material Intake */}
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', height: '16px' }}>
-                                    <Handle
-                                        type="target"
-                                        id="input"
-                                        position={Position.Left}
-                                        style={{ left: '-14px', background: '#3b82f6', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                    />
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        {(() => {
-                                            const currentInEdges = allEdges.filter(e => e.target === id && e.targetHandle === 'input');
-                                            const resSet = new Set<string>();
-                                            currentInEdges.forEach(e => {
-                                                const srcNode = nodes.find((n: any) => n.id === e.source);
-                                                const outType = srcNode?.data?.recipe?.outputType || srcNode?.data?.template?.output_type || srcNode?.data?.resourceType;
-                                                if (outType) resSet.add(outType);
-                                            });
+                        {(() => {
+                            const activeIdx = data?.activeRecipeIndex || 0;
+                            const activeRecipe = (recipes && Array.isArray(recipes)) ? recipes[activeIdx] : undefined;
+                            const allInputTypes = activeRecipe?.inputType
+                                ? String(activeRecipe.inputType).split(',').map(s => s.trim())
+                                : [];
 
-                                            if (resSet.size === 0 && recipes) {
-                                                const activeRecipe = recipes[data?.activeRecipeIndex || 0] || recipes[0];
-                                                const inTypes = typeof activeRecipe?.inputType === 'string' ? activeRecipe.inputType.split(',').map((t: any) => t.trim()) : [];
-                                                inTypes.forEach((t: any) => resSet.add(t));
-                                            }
-                                            return Array.from(resSet).map((res) => (
-                                                <span key={res} title={res} style={{ fontSize: '12px' }}>{RESOURCE_REGISTRY[res]?.icon || '❓'}</span>
-                                            ));
-                                        })()}
-                                        <span style={{ fontSize: '11px', color: '#f1f5f9' }}>Material Intake</span>
-                                    </div>
-                                    <span style={{ fontSize: '9px', color: '#94a3b8' }}>
-                                        {(() => {
-                                            const currentInEdges = allEdges.filter(e => e.target === id && e.targetHandle === 'input');
-                                            const resSet = new Set<string>();
-                                            currentInEdges.forEach(e => {
-                                                const srcNode = nodes.find((n: any) => n.id === e.source);
-                                                const outType = srcNode?.data?.recipe?.outputType || srcNode?.data?.template?.output_type || srcNode?.data?.resourceType;
-                                                if (outType) resSet.add(outType);
-                                            });
+                            const FUEL_RESOURCES = ['coal', 'wood_log', 'leaf', 'lava'];
 
-                                            if (resSet.size === 0 && recipes) {
-                                                const activeRecipe = recipes[data?.activeRecipeIndex || 0] || recipes[0];
-                                                const inTypes = typeof activeRecipe?.inputType === 'string' ? activeRecipe.inputType.split(',').map((t: any) => t.trim()) : [];
-                                                inTypes.forEach((t: any) => resSet.add(t));
-                                            }
+                            const renderInputHandle = (handleId: string, label: string, color: string, isFuel: boolean) => {
+                                const handleEdges = allEdges.filter(e => e.target === id && e.targetHandle === handleId);
+                                const totalFlow = handleEdges.reduce((s, e) => s + (Number((e.data as any)?.flow) || 0), 0);
 
-                                            const resources = Array.from(resSet).filter(k => new Decimal(data?.inputBuffer?.[k] || 0).gt(0));
-                                            const activeIdx = data?.activeRecipeIndex || 0;
-                                            const activeRecipe = (recipes && Array.isArray(recipes)) ? recipes[activeIdx] : undefined;
+                                // Filter resources from recipe that belong to this handle
+                                const relevantResources = allInputTypes.filter(res => {
+                                    const resourceIsFuel = FUEL_RESOURCES.includes(res);
+                                    return isFuel ? resourceIsFuel : !resourceIsFuel;
+                                });
 
-                                            const totalFlow = currentInEdges.reduce((s, e) => s + ((e.data as any)?.flow || 0), 0);
+                                // Don't show fuel handle if recipe doesn't need fuel
+                                if (isFuel && relevantResources.length === 0) return null;
+                                // Don't show main handle if recipe *only* needs fuel (rare but possible)
+                                if (!isFuel && relevantResources.length === 0 && allInputTypes.length > 0) return null;
 
-                                            // Fallback rate display
-                                            if (resources.length === 0) return `${formatNumber(totalFlow)}/s`;
-
-                                            const convRate = new Decimal(activeRecipe?.conversionRate || 1);
-                                            const req = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(Math.pow(2, level));
-
-                                            return resources.map(res => {
-                                                const amt = data?.inputBuffer?.[res] || 0;
-                                                return `${formatNumber(new Decimal(amt).floor())}/${req.toString()}`;
-                                            }).join(', ') + ` (${formatNumber(totalFlow)}/s)`;
-                                        })()}
-                                    </span>
-                                </div>
-
-                                {/* Fuel Divider */}
-                                {template.category !== 'generator' && (
-                                    <div style={{ borderTop: '1px dashed rgba(249, 115, 22, 0.4)', margin: '4px 0', paddingTop: '4px', textAlign: 'center', fontSize: '8px', color: '#f97316', fontWeight: 'bold' }}>
-                                        🔥 Fuel Chamber
-                                    </div>
-                                )}
-
-                                {/* Fuel Intake */}
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', height: '16px' }}>
-                                    <Handle
-                                        type="target"
-                                        id="fuel"
-                                        position={Position.Left}
-                                        style={{ left: '-14px', background: '#f97316', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                    />
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        {(() => {
-                                            const edges = allEdges.filter(e => e.target === id && e.targetHandle === 'fuel');
-                                            const resSet = new Set<string>();
-                                            edges.forEach(e => {
-                                                const srcNode = nodes.find((n: any) => n.id === e.source);
-                                                const outType = srcNode?.data?.recipe?.outputType || srcNode?.data?.template?.output_type || srcNode?.data?.resourceType;
-                                                if (outType) resSet.add(outType);
-                                            });
-                                            if (resSet.size === 0) {
-                                                Object.keys(data?.inputBuffer || {})
-                                                    .filter(k => data?.inputBuffer?.[k] && new Decimal(data.inputBuffer[k]).gt(0))
-                                                    .forEach(k => resSet.add(k));
-                                            }
-                                            return Array.from(resSet).map((res) => (
-                                                <span key={res} title={res} style={{ fontSize: '12px' }}>{RESOURCE_REGISTRY[res]?.icon || '🔥'}</span>
-                                            ));
-                                        })()}
-                                        <span style={{ fontSize: '11px', color: '#f97316' }}>Fuel Feed</span>
-                                    </div>
-                                    <span style={{ fontSize: '9px', color: '#f97316' }}>
-                                        {(() => {
-                                            const resources = Array.from(new Set(Object.keys(data?.inputBuffer || {}))).filter(k => new Decimal(data?.inputBuffer?.[k] || 0).gt(0));
-                                            const activeIdx = data?.activeRecipeIndex || 0;
-                                            const activeRecipe = (recipes && Array.isArray(recipes)) ? recipes[activeIdx] : undefined;
-
-                                            const currentFuelEdges = allEdges.filter(e => e.target === id && e.targetHandle === 'fuel');
-                                            const totalFuelFlow = currentFuelEdges.reduce((s, e) => s + ((e.data as any)?.flow || 0), 0);
-
-                                            if (resources.length === 0) return `${formatNumber(totalFuelFlow)}/s`;
-
-                                            const convRate = new Decimal(activeRecipe?.conversionRate || 1);
-                                            const req = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(Math.pow(2, level));
-
-                                            return resources.map(res => {
-                                                const amt = data?.inputBuffer?.[res] || 0;
-                                                return `${formatNumber(new Decimal(amt).floor())}/${req.toString()}`;
-                                            }).join(', ') + ` (${formatNumber(totalFuelFlow)}/s)`;
-                                        })()}
-                                    </span>
-                                </div>
-                            </>
-                        ) : (
-                            <>
-                                {/* Render All Inputs for Single-Input Nodes */}
-                                {inputs.map((input: string) => {
-                                    const inputEdges = allEdges.filter(e => e.target === id && e.targetHandle === input);
-                                    let incomingFlow = new Decimal(0);
-                                    inputEdges.forEach(e => {
-                                        const edgeData = e.data as any;
-                                        if (edgeData?.flow) incomingFlow = incomingFlow.plus(new Decimal(edgeData.flow));
-                                    });
-
-                                    const formattedFlow = formatNumber(incomingFlow);
-                                    const amount = data?.inputBuffer?.[input] || 0;
-
-                                    return (
-                                        <div key={input} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', height: '16px' }}>
-                                            <Handle
-                                                type="target"
-                                                id={input}
-                                                position={Position.Left}
-                                                style={{ left: '-14px', background: '#3b82f6', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                            />
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                <span style={{ fontSize: '12px' }}>{RESOURCE_REGISTRY[input]?.icon || '❓'}</span>
-                                                <span style={{ textTransform: 'capitalize' }}>{input.replace('_', ' ')}</span>
-                                            </div>
-                                            <span style={{ fontSize: '9px', color: '#94a3b8' }}>
-                                                {(() => {
-                                                    const convRate = new Decimal(activeRecipe?.conversionRate || 1);
-                                                    const req = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(Math.pow(2, level));
-                                                    return `${formatNumber(new Decimal(amount).floor())}/${req.toString()} (${formattedFlow}/s)`;
-                                                })()}
-                                            </span>
+                                return (
+                                    <div key={handleId} style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: '4px', padding: '6px 8px', background: 'rgba(15, 23, 42, 0.4)', borderRadius: '4px', borderLeft: `3px solid ${color}` }}>
+                                        <Handle
+                                            type="target"
+                                            id={handleId}
+                                            position={Position.Left}
+                                            style={{ left: '-18px', background: color, width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
+                                        />
+                                        <div style={{ fontSize: '10px', fontWeight: 'bold', color: color, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', justifyContent: 'space-between' }}>
+                                            <span>{label}</span>
+                                            <span style={{ fontSize: '8px', opacity: 0.8 }}>{formatNumber(totalFlow)}/s</span>
                                         </div>
-                                    );
-                                })}
-                            </>
-                        )}
+
+                                        {relevantResources.length > 0 ? relevantResources.map(res => {
+                                            const amt = Number(data?.inputBuffer?.[res] || 0);
+                                            const resMeta = RESOURCE_REGISTRY[res];
+                                            const convRate = new Decimal(activeRecipe?.conversionRate || 1);
+                                            const req = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(Math.pow(2, level));
+
+                                            return (
+                                                <div key={res} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#cbd5e1' }}>
+                                                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        <span style={{ fontSize: '12px' }}>{resMeta?.icon || '📦'}</span>
+                                                        <span style={{ textTransform: 'capitalize' }}>{res.replace('_', ' ')}:</span>
+                                                    </span>
+                                                    <b style={{ color: amt >= req.toNumber() ? '#34d399' : '#94a3b8' }}>
+                                                        {formatNumber(amt)}/{formatNumber(req)}
+                                                    </b>
+                                                </div>
+                                            );
+                                        }) : (
+                                            <div style={{ fontSize: '9px', color: '#64748b', fontStyle: 'italic' }}>No requirement in recipe</div>
+                                        )}
+                                    </div>
+                                );
+                            };
+
+                            return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                    {renderInputHandle('input', 'Material Intake', '#3b82f6', false)}
+                                    {renderInputHandle('fuel', 'Fuel Chamber', '#f97316', true)}
+                                </div>
+                            );
+                        })()}
                     </div>
                 )}
 
@@ -447,7 +369,7 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
                 )}
 
                 {/* 🔖 Active Recipe Info */}
-                {isMultiInput && activeRecipe && (
+                {hasMultipleRecipes && activeRecipe && (
                     <div style={{
                         marginTop: '5px',
                         padding: '4px 6px',
@@ -557,4 +479,4 @@ export const GenericNode: React.FC<GenericNodeProps> = ({ id, type, data, select
             )}
         </div>
     );
-};
+});

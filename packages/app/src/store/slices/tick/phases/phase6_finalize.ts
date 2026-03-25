@@ -10,6 +10,7 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
     const nextNodesMap: Record<string, Node<NodeData>> = {};
     nextNodes.forEach((n: Node<NodeData>) => nextNodesMap[n.id] = n);
 
+    const finalNodeStats: Record<string, Partial<NodeData>> = {};
     const finalNodes = state.nodes.map((liveNode: Node<NodeData>) => {
         const ticked = nextNodesMap[liveNode.id];
         if (!ticked) return liveNode;
@@ -29,17 +30,92 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             status = hasFlow ? 'active' : 'idle';
         }
 
-        const buffer: Record<string, string> = {};
-        const inc = nodeIncoming[ticked.id];
-        if (inc) {
-            for (const [rt, amt] of Object.entries(inc)) {
-                if (amt && (amt as Decimal).gt(0)) buffer[rt] = amt.toString();
+        const delta = ctx.nodeDeltas?.[liveNode.id] || {};
+
+        // 1. Resolve Input Buffer (Original machine buffer + incoming items from edges)
+        const combinedInputBuffer: Record<string, string> = {};
+        const baseInputBuffer = ticked.data.inputBuffer as Record<string, string | number | Decimal> || {};
+        for (const [rt, amt] of Object.entries(baseInputBuffer)) {
+            combinedInputBuffer[rt] = new Decimal(amt as any).toString();
+        }
+
+        const incomingItems = nodeIncoming[ticked.id];
+        if (incomingItems) {
+            for (const [rt, amt] of Object.entries(incomingItems)) {
+                if (amt && (amt as Decimal).gt(0)) {
+                    const currentAmount = combinedInputBuffer[rt] ? new Decimal(combinedInputBuffer[rt]) : new Decimal(0);
+                    combinedInputBuffer[rt] = currentAmount.plus(amt as Decimal).toString();
+                }
             }
         }
-        return { ...liveNode, data: { ...ticked.data, status, inputBuffer: buffer } };
+
+        // 2. Resolve Output Buffer (Merge deltas from phases)
+        const combinedOutputBuffer: Record<string, string> = {};
+        const baseOutputBuffer = ticked.data.outputBuffer as Record<string, string | number | Decimal> || {};
+        for (const [rt, amt] of Object.entries(baseOutputBuffer)) {
+            combinedOutputBuffer[rt] = new Decimal(amt as any).toString();
+        }
+        if (delta.outputBuffer) {
+            for (const [rt, amt] of Object.entries(delta.outputBuffer)) {
+                if (amt !== undefined) combinedOutputBuffer[rt] = new Decimal(amt as any).toString();
+            }
+        }
+
+        // 3. Prepare Node Stats for UI
+        finalNodeStats[liveNode.id] = {
+            ...ticked.data,
+            ...delta,
+            status,
+            boost: delta.boost || ticked.data.boost || 1,
+            boostedCount: delta.boostedCount !== undefined ? delta.boostedCount : ticked.data.boostedCount,
+            inputBuffer: combinedInputBuffer,
+            outputBuffer: combinedOutputBuffer
+        };
+
+        // 4. Update Main Node Object (Persistent State)
+        // We sync critical metrics back to the node so they are available in next tick's Phase 0 (Power/Amplifier)
+        const nextData = {
+            ...liveNode.data,
+            status,
+            inputBuffer: combinedInputBuffer,
+            outputBuffer: combinedOutputBuffer,
+
+            // Sync smoothed metrics
+            actualInputPerSec: delta.actualInputPerSec !== undefined ? delta.actualInputPerSec.toString() : liveNode.data.actualInputPerSec,
+            actualOutputPerSec: delta.actualOutputPerSec !== undefined ? delta.actualOutputPerSec.toString() : liveNode.data.actualOutputPerSec,
+            efficiency: delta.efficiency !== undefined ? delta.efficiency.toString() : liveNode.data.efficiency,
+
+            // Sync power metrics for resolvePowerGrid
+            inputEfficiency: delta.inputEfficiency !== undefined ? delta.inputEfficiency.toString() : liveNode.data.inputEfficiency,
+            productionEfficiency: delta.productionEfficiency !== undefined ? delta.productionEfficiency.toString() : liveNode.data.productionEfficiency,
+            wirelessEfficiency: ticked.data.wirelessEfficiency !== undefined ? ticked.data.wirelessEfficiency.toString() : liveNode.data.wirelessEfficiency,
+            gridSupply: ticked.data.gridSupply !== undefined ? ticked.data.gridSupply.toString() : liveNode.data.gridSupply,
+            gridDemand: ticked.data.gridDemand !== undefined ? ticked.data.gridDemand.toString() : liveNode.data.gridDemand,
+
+            // Other persistent deltas
+            buffer: delta.buffer || ticked.data.buffer || liveNode.data.buffer,
+            boost: delta.boost || ticked.data.boost || liveNode.data.boost || 1,
+            boostedCount: delta.boostedCount !== undefined ? delta.boostedCount : (ticked.data.boostedCount !== undefined ? ticked.data.boostedCount : liveNode.data.boostedCount),
+            currentAmount: delta.currentAmount !== undefined ? delta.currentAmount.toString() : (ticked.data.currentAmount ? ticked.data.currentAmount.toString() : liveNode.data.currentAmount),
+            activeRecipeIndex: delta.activeRecipeIndex !== undefined ? delta.activeRecipeIndex : liveNode.data.activeRecipeIndex,
+        };
+
+        // Determine if we truly need to create a new object (performance)
+        // Note: Decimal objects in nextData will be serialized to strings by JSON.stringify
+        const isDirty = JSON.stringify(liveNode.data) !== JSON.stringify(nextData) || liveNode.type !== ticked.type;
+
+        if (isDirty) {
+            return {
+                ...liveNode,
+                data: nextData
+            };
+        }
+
+        return liveNode;
     });
 
     const finalEdges = state.edges.map((e: Edge) => {
+        // ... (existing edge logic)
         const flow = edgeFlows[e.id];
         const bp = edgeBackpressures[e.id] || new Decimal(1);
         const isBottleneck = edgeBottlenecks[e.id] || false;
@@ -49,7 +125,11 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
         let dominantRt = 'water';
         let hasFlow = false;
         const srcNode = nodesById[e.source];
-        const isContinuous = (srcNode?.type?.includes('Generator') || srcNode?.type === 'downloader' || srcNode?.type === 'powerReceiver') && srcNode?.type !== 'splitter' && srcNode?.type !== 'merger';
+        const srcType = (srcNode?.type || '').toLowerCase();
+        const srcCat = (srcNode?.data?.category || '').toLowerCase();
+        const isContinuous = (srcType.includes('generator') || srcType === 'downloader' || srcType === 'powerreceiver') &&
+            !srcType.includes('splitter') && !srcType.includes('merger') &&
+            srcCat !== 'splitter' && srcCat !== 'merger';
 
         const status = srcNode?.data?.status || 'idle';
         const rate = srcNode?.data?.actualOutputPerSec !== undefined ? srcNode.data.actualOutputPerSec : srcNode?.data?.outputRate;
@@ -62,9 +142,20 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             );
             const outEdgesCount = uniqueTargetEdges.length;
             if (outEdgesCount > 1) flowVal = flowVal.dividedBy(outEdgesCount);
-            data.flow = flowVal.toString();
+
+            // CLAMP by edge capacity
             dominantRt = srcNode.data.resourceType || 'water';
             if (['hydroGenerator', 'powerTransmitter', 'powerReceiver', 'powerPole', 'accumulator'].includes(srcNode?.type || '')) dominantRt = 'electricity';
+
+            const material = RESOURCE_STATES[dominantRt] || 'solid';
+            const edgeTier = e.data?.tier ?? 0;
+            const globalTier = state.edgeTiers[material] || 0;
+            const tier = Math.max(edgeTier, globalTier);
+            const edgeCap = new Decimal(60 * Math.pow(2, tier));
+
+            if (flowVal.gt(edgeCap)) flowVal = edgeCap;
+
+            data.flow = flowVal.toString();
         } else if (flow && Object.keys(flow).length > 0) {
             [dominantRt] = Object.entries(flow).sort((a, b) => (b[1] as Decimal).sub(a[1] as Decimal).toNumber())[0];
             hasFlow = true;
@@ -142,5 +233,5 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
         if (v && dtSeconds > 0) finalCloudCons[rt as ResourceType] = (v as Decimal).dividedBy(dtSeconds);
     }
 
-    return { finalNodes, finalEdges, finalProd, finalCons, finalCloudProd, finalCloudCons };
+    return { finalNodes, finalEdges, finalProd, finalCons, finalCloudProd, finalCloudCons, finalNodeStats };
 };

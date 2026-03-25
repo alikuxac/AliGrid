@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import { NodeResizer } from 'reactflow';
 import { useStore } from '../store';
 
@@ -24,7 +24,7 @@ const PRESET_COLORS = [
     { name: 'Purple', value: 'rgba(139, 92, 246, 0.2)' },
 ];
 
-export const GroupNode: React.FC<GroupNodeProps> = ({ id, data, selected }) => {
+export const GroupNode: React.FC<GroupNodeProps> = memo(({ id, data, selected }) => {
     const updateNodeData = useStore((state) => state.updateNodeData);
     const [isEditing, setIsEditing] = useState(false);
     const [title, setTitle] = useState(data.label || 'Group Area');
@@ -62,7 +62,7 @@ export const GroupNode: React.FC<GroupNodeProps> = ({ id, data, selected }) => {
     };
 
     return (
-        <div style={{
+        <div className="group-node-container" style={{
             background: bgColor,
             border: `2px ${selected ? 'solid' : 'dashed'} ${selected ? '#3b82f6' : 'rgba(148, 163, 184, 0.4)'}`,
             borderRadius: '8px',
@@ -71,14 +71,17 @@ export const GroupNode: React.FC<GroupNodeProps> = ({ id, data, selected }) => {
             position: 'relative',
             fontFamily: 'monospace',
             transition: 'border-color 0.2s',
+            pointerEvents: 'none' // Let clicks pass through the body to edges/nodes behind it
         }}>
-            <NodeResizer
-                minWidth={150}
-                minHeight={100}
-                isVisible={selected && !isLocked}
-                lineClassName="border-blue-400"
-                handleClassName="h-3 w-3 bg-white border-2 border-blue-400 rounded"
-            />
+            <div style={{ pointerEvents: 'all' }}>
+                <NodeResizer
+                    minWidth={150}
+                    minHeight={100}
+                    isVisible={selected && !isLocked}
+                    lineClassName="border-blue-400"
+                    handleClassName="h-3 w-3 bg-white border-2 border-blue-400 rounded"
+                />
+            </div>
 
             {/* Header */}
             <div className="group-node-header" style={{
@@ -228,4 +231,4 @@ export const GroupNode: React.FC<GroupNodeProps> = ({ id, data, selected }) => {
             }} />
         </div>
     );
-};
+});

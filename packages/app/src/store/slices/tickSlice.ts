@@ -81,12 +81,6 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                         node.data.outputBuffer = { [node.data.resourceType || 'unknown']: node.data.outputBuffer };
                     }
                 }
-                if (node.data?.inputBuffer) {
-                    for (const [rt, amt] of Object.entries(node.data.inputBuffer)) {
-                        if (!nodeIncoming[node.id]) nodeIncoming[node.id] = {};
-                        nodeIncoming[node.id]![rt as ResourceType] = new Decimal(amt as string);
-                    }
-                }
                 if (node.data?.currentAmount) {
                     node.data.currentAmount = new Decimal(node.data.currentAmount);
                 }
@@ -102,6 +96,7 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
 
             const edgeBackpressures: Record<string, Decimal> = {};
             const edgeBottlenecks: Record<string, boolean> = {};
+            const nodeDeltas: Record<string, Partial<NodeData>> = {};
 
             const ctx: TickContext = {
                 dtSeconds,
@@ -120,7 +115,8 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                 cloudProduction,
                 cloudConsumption,
                 nextCloudStorage,
-                nextNodes
+                nextNodes,
+                nodeDeltas
             };
 
             // ═══ Phase 0: Power Grid Resolution ═══
@@ -130,17 +126,18 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
             const nodeBoosts: Record<string, number> = {};
             const amplifiers = ctx.nextNodes.filter(n => n.type === 'amplifier' && !n.data?.isOff);
             const poweredAmps = amplifiers.filter(n => {
-                const eff = n.data?.wirelessEfficiency ? new Decimal(n.data.wirelessEfficiency) : new Decimal(0);
-                return eff.gte(0.99);
+                const eff = n.data?.wirelessEfficiency ? new Decimal(n.data.wirelessEfficiency as any) : new Decimal(0);
+                return eff.gt(0.1);
             });
 
             poweredAmps.forEach((amp) => {
                 const template = amp.data?.template || state.nodeTemplates.find((t: any) => t.id === amp.type) || FALLBACK_NODES.find((f: any) => f.id === amp.type);
-                const baseRad = Number((template as any)?.radius || 150);
+                const baseRad = Number((template as any)?.radius || 200);
                 const lv = amp.data?.level || 0;
-                const radius = baseRad + (lv * 25);
+                const radius = baseRad * (1 + lv * 0.2);
 
                 const ampPos = getAbsPosition(ctx, amp);
+                let boostedCount = 0;
                 ctx.nextNodes.forEach((node) => {
                     if (node.id === amp.id) return;
                     if (node.type && ['powerTransmitter', 'powerReceiver', 'powerPole', 'accumulator'].includes(node.type)) return;
@@ -148,21 +145,35 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                     const nodePos = getAbsPosition(ctx, node);
                     const dist = Math.hypot(ampPos.x - nodePos.x, ampPos.y - nodePos.y);
                     if (dist <= radius) {
-                        nodeBoosts[node.id] = (nodeBoosts[node.id] || 1) + 1;
+                        const newBoost = (nodeBoosts[node.id] || 1) + 1;
+                        nodeBoosts[node.id] = newBoost;
+                        boostedCount++;
                     }
                 });
+                nodeDeltas[amp.id] = { ...nodeDeltas[amp.id], boostedCount };
             });
             ctx.nodeBoosts = nodeBoosts;
+
+            // Sync boosts to nodeDeltas for UI
+            ctx.nextNodes.forEach(node => {
+                const boost = nodeBoosts[node.id] || 1;
+                nodeDeltas[node.id] = { ...nodeDeltas[node.id], boost };
+            });
+
+            // ═══ Re-Resolve Power Grid with Boosted Demand ═══
+            if (Object.keys(nodeBoosts).length > 0) {
+                resolvePowerGrid(ctx);
+            }
 
             // ═══ Phase 1: Generators ═══
             updateGenerators(ctx);
 
-            // ═══ Phase 3: Processors & Assemblers ═══
-            updateProcessorsAndAssemblers(ctx);
+            // ═══ Phase 2: Propagation (Populate nodeIncoming) ═══
+            resolvePropagation(ctx);
+            resolvePropagation(ctx);
 
-            // ═══ Phase 2: Propagation ═══
-            resolvePropagation(ctx);
-            resolvePropagation(ctx);
+            // ═══ Phase 3: Processors & Assemblers (Consume nodeIncoming) ═══
+            updateProcessorsAndAssemblers(ctx);
 
             // ═══ Phase 4: Storages ═══
             updateStorages(ctx);
@@ -171,11 +182,12 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
             updateAntennas(ctx);
 
             // ═══ Phase 6: Finalize ═══
-            const { finalNodes, finalEdges, finalProd, finalCons, finalCloudProd, finalCloudCons } = finalizeNodesAndEdges(ctx);
+            const { finalNodes, finalEdges, finalProd, finalCons, finalCloudProd, finalCloudCons, finalNodeStats } = finalizeNodesAndEdges(ctx);
 
             return {
                 nodes: finalNodes,
                 edges: finalEdges,
+                nodeStats: finalNodeStats,
                 cloudStorage: nextCloudStorage,
                 globalStats: {
                     production: finalProd,

@@ -12,6 +12,7 @@ export const NodeTemplateSchema = z.object({
     name: z.string(),
     category: z.string(),
     icon: z.string().optional().nullable(),
+    radius: z.number().optional().nullable(),
     resource_type: z.string().optional().nullable(),
     input_type: z.string().optional().nullable(),
     output_type: z.string().optional().nullable(),
@@ -20,7 +21,9 @@ export const NodeTemplateSchema = z.object({
     power_demand: z.string().optional().nullable(),
     style_bg: z.string().optional().nullable(),
     style_header: z.string().optional().nullable(),
-    maxBuffer: z.union([z.string(), z.number()]).optional().nullable()
+    maxBuffer: z.union([z.string(), z.number()]).optional().nullable(),
+    upgrade_cost_config: z.string().optional().nullable(),
+    upgrade_benefit_config: z.string().optional().nullable(),
 });
 
 export type NodeTemplate = z.infer<typeof NodeTemplateSchema>;

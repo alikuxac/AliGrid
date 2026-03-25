@@ -13,6 +13,8 @@ export interface RecipeConfig {
 export interface NodeData {
     level?: number;
     status?: string;
+    boost?: number;
+    boostedCount?: number;
     debugLog?: string;
     isOff?: boolean;
     resourceType?: string;
@@ -22,25 +24,25 @@ export interface NodeData {
     recipe?: RecipeConfig;
     buffer?: string | number | Decimal;
     maxBuffer?: string | number | Decimal;
-    wirelessEfficiency?: number | Decimal;
-    productionEfficiency?: number | Decimal;
-    gridSupply?: Decimal;
-    gridDemand?: Decimal;
+    wirelessEfficiency?: number | Decimal | string;
+    productionEfficiency?: number | Decimal | string;
+    gridSupply?: Decimal | string;
+    gridDemand?: Decimal | string;
     ratios?: number[];
     maxOutputs?: number;
     activeInputs?: number;
     maxInputs?: number;
     lockedResourceType?: string;
     template?: NodeTemplate;
-    actualInputPerSec?: Decimal;
-    actualOutputPerSec?: Decimal;
-    currentAmount?: Decimal;
+    actualInputPerSec?: Decimal | string;
+    actualOutputPerSec?: Decimal | string;
+    currentAmount?: Decimal | string;
     width?: number;
     height?: number;
     tier?: number;
     outputRate?: number;
-    efficiency?: number | Decimal;
-    inputEfficiency?: Decimal;
+    efficiency?: number | Decimal | string;
+    inputEfficiency?: Decimal | string;
     activeRecipeIndex?: number;
     inputBuffer?: Partial<Record<string, number | Decimal | string>>;
     outputBuffer?: Partial<Record<string, number | Decimal | string>>;
@@ -90,6 +92,11 @@ export type RFState = {
     setIsViewOnly?: (val: boolean) => void;
     addNodeToGroup: (nodeId: string, groupId: string | null) => void;
     downloaderTier?: number;
+    activeTab: 'nodes' | 'upgrades' | 'inventory';
+    setActiveTab: (val: 'nodes' | 'upgrades' | 'inventory') => void;
+    isSidebarOpen: boolean;
+    setIsSidebarOpen: (val: boolean) => void;
+    nodeStats: Record<string, Partial<NodeData>>;
 };
 
 export interface FlowEdgeData {

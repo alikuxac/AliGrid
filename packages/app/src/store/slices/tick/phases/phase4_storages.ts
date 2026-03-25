@@ -4,9 +4,10 @@ import { NodeData } from '../../../types';
 import { TickContext } from '../types';
 
 export const updateStorages = (ctx: TickContext) => {
-    const { dtSeconds, nodeIncoming, edgeBackpressures, inEdgesByTarget } = ctx;
+    const { dtSeconds, nodeIncoming, edgeBackpressures, inEdgesByTarget, nodeDeltas = {} } = ctx;
+    ctx.nodeDeltas = nodeDeltas;
 
-    ctx.nextNodes = ctx.nextNodes.map((node: Node<NodeData>) => {
+    for (const node of ctx.nextNodes) {
         if (node.type === 'storage') {
             const incomingMap = nodeIncoming[node.id];
             let locked = node.data.lockedResourceType as ResourceType | undefined;
@@ -29,7 +30,7 @@ export const updateStorages = (ctx: TickContext) => {
 
                     const simState: StorageNodeData = {
                         id: node.id, type: "storage", level: node.data.level || 1,
-                        currentAmount: amount, lockedResourceType: locked, actualInputPerSec
+                        currentAmount: new Decimal(amount as any), lockedResourceType: locked, actualInputPerSec
                     };
 
                     const { updatedAmount } = updateStorageNodeSingle(simState, inAmt);
@@ -47,8 +48,12 @@ export const updateStorages = (ctx: TickContext) => {
                 actualInputPerSec = new Decimal(0);
             }
 
-            return { ...node, data: { ...node.data, lockedResourceType: locked, currentAmount: amount, actualInputPerSec } };
+            nodeDeltas[node.id] = {
+                ...nodeDeltas[node.id],
+                lockedResourceType: locked,
+                currentAmount: amount,
+                actualInputPerSec
+            };
         }
-        return node;
-    });
+    }
 };

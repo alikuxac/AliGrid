@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { Decimal, RESOURCE_REGISTRY } from '@aligrid/engine';
 import type { ProcessorRecipe } from '@aligrid/engine';
 import { useStore } from '../store';
+import { Counter } from '../components/Counter';
 
 const RESOURCE_META: Record<string, { icon: string; label: string; color: string }> = {
     water: { icon: '💧', label: 'Water', color: '#3b82f6' },
@@ -16,26 +17,28 @@ export interface ProcessorNodeProps {
     data: {
         processorName: string;
         recipe: ProcessorRecipe;
-        actualInputPerSec?: Decimal;
-        actualOutputPerSec?: Decimal;
+        actualInputPerSec?: Decimal | string;
+        actualOutputPerSec?: Decimal | string;
         isOff?: boolean;
         status?: string;
     };
 }
 
-export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = ({ id, data }) => {
-    const isOff = data?.isOff || false;
+export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
+    const isOff = liveData?.isOff || false;
     const recipe = data?.recipe;
     const inMeta = RESOURCE_META[recipe?.inputType] || RESOURCE_META.water;
     const outMeta = RESOURCE_META[recipe?.outputType] || RESOURCE_META.electricity;
     const regIn = recipe?.inputType ? RESOURCE_REGISTRY[recipe.inputType] : null;
     const regOut = recipe?.outputType ? RESOURCE_REGISTRY[recipe.outputType] : null;
-    const convRate = recipe?.conversionRate ? recipe.conversionRate.toNumber().toFixed(3) : '0';
+    const convRate = recipe?.conversionRate ? new Decimal(recipe.conversionRate as any).toNumber().toFixed(3) : '0';
 
-    const actualIn = data?.actualInputPerSec ? data.actualInputPerSec.toNumber().toFixed(1) : '0.0';
-    const actualOut = data?.actualOutputPerSec ? data.actualOutputPerSec.toNumber().toFixed(1) : '0.0';
+    const actualIn = liveData?.actualInputPerSec ? new Decimal(liveData.actualInputPerSec as any).toNumber().toFixed(1) : '0.0';
+    const actualOut = liveData?.actualOutputPerSec ? new Decimal(liveData.actualOutputPerSec as any).toNumber().toFixed(1) : '0.0';
 
-    const status = data?.status || 'active';
+    const status = liveData?.status || 'active';
     const borderColor = status === 'warning' ? '#ef4444' : status === 'idle' ? '#eab308' : '#facc15';
 
     return (
@@ -64,7 +67,7 @@ export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = ({ i
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '14px' }}>⚙️</span>
-                    <span style={{ textDecoration: isOff ? 'line-through' : 'none', color: isOff ? '#64748b' : '#e2e8f0' }}>{data?.processorName || 'Processor'}</span>
+                    <span style={{ textDecoration: isOff ? 'line-through' : 'none', color: isOff ? '#64748b' : '#e2e8f0' }}>{liveData?.processorName || 'Processor'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                     <button
@@ -121,12 +124,18 @@ export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = ({ i
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ color: '#64748b' }}>Consuming</span>
-                        <span style={{ color: '#f87171', fontWeight: 'bold', fontSize: '13px' }}>-{actualIn} {regIn?.unit || ''}/s</span>
+                        <span style={{ color: '#f87171', fontWeight: 'bold', fontSize: '13px' }}>-<Counter value={liveData?.actualInputPerSec || 0} /> {regIn?.unit || ''}/s</span>
                     </div>
                 </div>
 
                 {/* Conversion Arrow */}
-                <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px' }}>× {convRate} ▼</div>
+                <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px' }}>
+                    × {convRate}
+                    {liveData?.boost && liveData.boost > 1 && (
+                        <span style={{ color: '#fb923c' }}> (Boost: +{(liveData.boost - 1) * 100}%)</span>
+                    )}
+                    ▼
+                </div>
 
                 {/* Output */}
                 <div style={{
@@ -142,7 +151,7 @@ export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = ({ i
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ color: '#64748b' }}>Producing</span>
-                        <span style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '13px' }}>+{actualOut} {regOut?.unit || ''}/s</span>
+                        <span style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '13px' }}>+<Counter value={liveData?.actualOutputPerSec || 0} /> {regOut?.unit || ''}/s</span>
                     </div>
                 </div>
             </div>
@@ -156,4 +165,4 @@ export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = ({ i
             />
         </div>
     );
-};
+});

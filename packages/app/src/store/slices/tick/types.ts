@@ -34,4 +34,5 @@ export interface TickContext {
     nextCloudStorage: Record<string, Decimal>; // Thường là Record<ResourceType, Decimal> nhưng dể string cho an toàn map
     nextNodes: Node<NodeData>[];
     nodeBoosts?: Record<string, number>;
+    nodeDeltas?: Record<string, Partial<NodeData>>; // Track only what changed
 }

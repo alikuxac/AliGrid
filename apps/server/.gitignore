@@ -1,0 +1,11 @@
+# Wrangler/Cloudflare
+.wrangler/
+.dev.vars
+wrangler.state/
+
+# Dependencies
+node_modules/
+
+# Environment Variables
+.env
+*.local

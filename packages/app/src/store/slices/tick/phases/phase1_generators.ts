@@ -6,7 +6,8 @@ import { addStat, getEdgeBackpressure, pushToMultipleEdges, pushToEdge } from '.
 import { isGenerator } from '../../../helpers';
 
 export const updateGenerators = (ctx: TickContext) => {
-    const { nextNodes, outEdgesBySource, dtSeconds, nextCloudStorage } = ctx;
+    const { nextNodes, outEdgesBySource, dtSeconds, nextCloudStorage, nodeDeltas = {} } = ctx;
+    ctx.nodeDeltas = nodeDeltas;
 
     const pumpsNodes: Node<NodeData>[] = [];
     const minersNodes: Node<NodeData>[] = [];
@@ -49,7 +50,10 @@ export const updateGenerators = (ctx: TickContext) => {
                 pushedTotal = pushToMultipleEdges(ctx, targetEdges, resType, totalGain);
             }
             const remainder = totalGain.minus(pushedTotal);
-            node.data.outputBuffer = { ...bufferObj, [resType]: remainder.toString() };
+            nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: { ...bufferObj, [resType]: remainder.toString() } };
+        } else {
+            // Even without edges, we must persist the accumulated internal buffer
+            nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: { ...bufferObj, [resType]: totalGain.toString() } };
         }
         addStat(ctx, 'production', resType, pushedTotal);
         const outputPerSec = dtSeconds > 0 ? pushedTotal.dividedBy(dtSeconds) : new Decimal(0);
@@ -59,13 +63,16 @@ export const updateGenerators = (ctx: TickContext) => {
         const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : pumpEff;
         const smoothedEff = lastEff.times(0.8).plus(pumpEff.times(0.2));
 
-        node.data = { ...node.data, efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
+        nodeDeltas[node.id] = { ...nodeDeltas[node.id], efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
     }
 
     // ═══ Phase 1.5: Miners Pass (Consumes Electricity) ═══
     for (const node of minersNodes) {
         if (node.data.isOff) continue;
-        const resType = node.data.resourceType as ResourceType || (node.data?.template as any)?.resource_type as ResourceType;
+        const resTypeStr = (node.data.resourceType as string) || (node.data?.template as any)?.resource_type as string;
+        if (!resTypeStr) continue;
+
+        const resTypes = resTypeStr.split(',').map(r => r.trim() as ResourceType);
         const powerCons = node.data.powerConsumption ? new Decimal(node.data.powerConsumption) : new Decimal(0);
         const reqAmt = powerCons.times(dtSeconds);
 
@@ -74,39 +81,64 @@ export const updateGenerators = (ctx: TickContext) => {
         const outRate = node.data.outputRate ? new Decimal(node.data.outputRate) : new Decimal(0);
         const maxOutputBuffer = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(100);
 
-        const potentialGain = outRate.times(dtSeconds).times(efficiency);
-        const bufferObj = node.data.outputBuffer || {};
-        const bucket = bufferObj[resType] ? new Decimal(bufferObj[resType]!) : new Decimal(0);
-        const capacityLeft = Decimal.max(0, maxOutputBuffer.minus(bucket));
-        const actualGain = Decimal.min(potentialGain, capacityLeft);
+        const boost = ctx.nodeBoosts?.[node.id] || 1;
+        const potentialGain = outRate.times(dtSeconds).times(efficiency).times(boost);
+        const bufferObj = { ...(node.data.outputBuffer || {}) };
 
-        const totalGain = bucket.plus(actualGain);
-        const minerEff = potentialGain.gt(0) ? actualGain.dividedBy(potentialGain) : new Decimal(1);
+        // 1. Calculate minimum efficiency among all outputs (enforce backpressure)
+        let minEff = new Decimal(1);
+        for (const rType of resTypes) {
+            const bucket = bufferObj[rType] ? new Decimal(bufferObj[rType]!) : new Decimal(0);
+            const capacityLeft = Decimal.max(0, maxOutputBuffer.minus(bucket));
+            const currentEff = potentialGain.gt(0) ? Decimal.min(potentialGain, capacityLeft).dividedBy(potentialGain) : new Decimal(1);
+            if (currentEff.lt(minEff)) minEff = currentEff;
+        }
+
         const targetEdges = outEdgesBySource[node.id] || [];
         const edgeCount = targetEdges.length;
 
-        let pushedTotal = new Decimal(0);
-        if (edgeCount > 0) {
-            if (totalGain.gt(0)) {
-                pushedTotal = pushToMultipleEdges(ctx, targetEdges, resType, totalGain);
+        let firstPushedTotal = new Decimal(0);
+        let first = true;
+
+        // 2. Process outputs
+        for (const rType of resTypes) {
+            const bucket = bufferObj[rType] ? new Decimal(bufferObj[rType]!) : new Decimal(0);
+            const actualGain = potentialGain.times(minEff);
+            const totalGain = bucket.plus(actualGain);
+
+            let pushedTotal = new Decimal(0);
+            if (edgeCount > 0) {
+                if (totalGain.gt(0)) {
+                    pushedTotal = pushToMultipleEdges(ctx, targetEdges, rType, totalGain);
+                }
+                const remainder = totalGain.minus(pushedTotal);
+                bufferObj[rType] = remainder.toString();
+            } else {
+                bufferObj[rType] = totalGain.toString();
             }
-            const remainder = totalGain.minus(pushedTotal);
-            node.data.outputBuffer = { ...bufferObj, [resType]: remainder.toString() };
+            addStat(ctx, 'production', rType, pushedTotal);
+
+            if (first) {
+                firstPushedTotal = pushedTotal;
+                first = false;
+            }
         }
-        addStat(ctx, 'production', resType, pushedTotal);
+        nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: bufferObj };
+
         if (reqAmt.gt(0)) {
-            const actualEff = efficiency.times(minerEff);
+            const actualEff = efficiency.times(minEff);
             addStat(ctx, 'consumption', 'electricity', reqAmt.times(actualEff));
         }
-        const outputPerSec = dtSeconds > 0 ? pushedTotal.dividedBy(dtSeconds) : new Decimal(0);
+
+        const outputPerSec = dtSeconds > 0 ? firstPushedTotal.dividedBy(dtSeconds) : new Decimal(0);
         const lastOutput = node.data.actualOutputPerSec ? new Decimal(node.data.actualOutputPerSec as any) : outputPerSec;
         const smoothedOutput = lastOutput.times(0.8).plus(outputPerSec.times(0.2));
 
-        const displayEff = efficiency.times(minerEff);
+        const displayEff = efficiency.times(minEff);
         const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : displayEff;
         const smoothedEff = lastEff.times(0.8).plus(displayEff.times(0.2));
 
-        node.data = { ...node.data, efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
+        nodeDeltas[node.id] = { ...nodeDeltas[node.id], efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
     }
 
     // ═══ Phase 1.6: Cloud Downloaders ═══
@@ -137,6 +169,13 @@ export const updateGenerators = (ctx: TickContext) => {
                         pushToEdge(ctx, edge, resType, amountPerEdge);
                     }
                 }
+
+                const outPerSec = dtSeconds > 0 ? consumed.dividedBy(dtSeconds) : new Decimal(0);
+                nodeDeltas[node.id] = {
+                    ...nodeDeltas[node.id],
+                    actualOutputPerSec: outPerSec,
+                    efficiency: demand.gt(0) ? consumed.dividedBy(demand) : new Decimal(1)
+                };
             }
         }
     }

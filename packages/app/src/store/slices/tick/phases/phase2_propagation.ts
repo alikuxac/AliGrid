@@ -35,12 +35,26 @@ export const resolvePropagation = (ctx: TickContext) => {
                         const handleEdges = targetEdges.filter((e) => e.sourceHandle === `output-${i}`);
                         return handleEdges.length > 0 ? r : 0;
                     });
-                    const totalRatio = activeRatios.reduce((s, r) => s + r, 0);
 
-                    if (totalRatio > 0) {
-                        const remainder: Partial<Record<ResourceType, Decimal>> = {};
-                        for (const [rt, amt] of Object.entries(incoming)) {
-                            remainder[rt as ResourceType] = amt as Decimal;
+                    let remainder: Partial<Record<ResourceType, Decimal>> = {};
+                    for (const [rt, amt] of Object.entries(incoming)) {
+                        remainder[rt as ResourceType] = amt as Decimal;
+                    }
+
+                    let isProcessingOverflow = true;
+                    // Prevent infinite loops by capping precision passes
+                    let preventInfiniteLoop = 0;
+
+                    while (isProcessingOverflow && preventInfiniteLoop < 5) {
+                        isProcessingOverflow = false;
+                        preventInfiniteLoop++;
+
+                        const totalRatio = activeRatios.reduce((s, r) => s + r, 0);
+                        if (totalRatio === 0) break;
+
+                        let nextRemainder: Partial<Record<ResourceType, Decimal>> = {};
+                        for (const [rt, amt] of Object.entries(remainder)) {
+                            nextRemainder[rt as ResourceType] = amt as Decimal;
                         }
 
                         for (let i = 0; i < ratios.length; i++) {
@@ -49,34 +63,36 @@ export const resolvePropagation = (ctx: TickContext) => {
                             const fraction = ratios[i] / totalRatio;
                             const handleId = `output-${i}`;
                             const handleEdges = targetEdges.filter((e) => e.sourceHandle === handleId);
-                            const handleEdgeCount = handleEdges.length;
 
-                            if (handleEdgeCount > 0) {
-                                for (const [rt, amt] of Object.entries(incoming)) {
+                            if (handleEdges.length > 0) {
+                                let branchFilled = false;
+                                for (const [rt, amt] of Object.entries(remainder)) {
+                                    if ((amt as Decimal).lte(0)) continue;
+
                                     const portion = (amt as Decimal).times(fraction);
                                     let totalPushedHandle = pushToMultipleEdges(ctx, handleEdges, rt as ResourceType, portion);
-                                    remainder[rt as ResourceType] = (remainder[rt as ResourceType] || new Decimal(0)).minus(totalPushedHandle);
+
+                                    nextRemainder[rt as ResourceType] = (nextRemainder[rt as ResourceType] || new Decimal(0)).minus(totalPushedHandle);
+
+                                    // If we failed to push the full portion, this branch is full/bottlenecked.
+                                    // Remove it from the active pool to redirect its overflow to siblings.
+                                    if (totalPushedHandle.lt(portion)) {
+                                        branchFilled = true;
+                                    }
+                                }
+
+                                if (branchFilled) {
+                                    activeRatios[i] = 0;
+                                    isProcessingOverflow = true;
                                 }
                             }
                         }
 
-                        // Pass 2: Overflow
-                        for (const [rt, left] of Object.entries(remainder)) {
-                            if ((left as Decimal).gt(0)) {
-                                const activeHandleEdges: Edge[] = [];
-                                for (let i = 0; i < ratios.length; i++) {
-                                    if (activeRatios[i] === 0) continue;
-                                    const handleEdges = targetEdges.filter((e) => e.sourceHandle === `output-${i}`);
-                                    activeHandleEdges.push(...handleEdges);
-                                }
-                                if (activeHandleEdges.length > 0) {
-                                    const overflowPushed = pushToMultipleEdges(ctx, activeHandleEdges, rt as ResourceType, left as Decimal);
-                                    remainder[rt as ResourceType] = (left as Decimal).minus(overflowPushed);
-                                }
-                            }
-                        }
+                        remainder = nextRemainder;
+                    }
 
-                        nodeIncoming[node.id] = remainder;
+                    nodeIncoming[node.id] = remainder;
+                    if (preventInfiniteLoop > 1 || ratios.length > 0) {
                         didWork = true;
                     }
                 }

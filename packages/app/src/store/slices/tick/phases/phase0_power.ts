@@ -114,8 +114,9 @@ export const resolvePowerGrid = (ctx: TickContext) => {
 
     grids.forEach(grid => {
         grid.consumers.forEach((node: Node<NodeData>) => {
-            const powerCons = node.data?.powerConsumption || new Decimal(0);
-            grid.demand = grid.demand.plus(new Decimal(powerCons));
+            const boost = ctx.nodeBoosts?.[node.id] || 1;
+            const powerCons = new Decimal(node.data?.powerConsumption || 0).times(boost);
+            grid.demand = grid.demand.plus(powerCons);
             consumerGrids[node.id] = grid;
         });
     });
@@ -124,8 +125,10 @@ export const resolvePowerGrid = (ctx: TickContext) => {
     grids.forEach(grid => {
         grid.producers.forEach((p: Node<NodeData>) => {
             if (p.data?.isOff) return;
+            // Removed inputEfficiency throttle here to prevent deadlocks.
+            // Actual resource consumption and throttled production happens in Phase 3.
             let rate = p.data?.outputRate
-                ? new Decimal(p.data.outputRate).times(p.data.inputEfficiency !== undefined ? new Decimal(p.data.inputEfficiency) : 1)
+                ? new Decimal(p.data.outputRate)
                 : (p.data?.actualOutputPerSec ? new Decimal(p.data.actualOutputPerSec) : new Decimal(0));
 
             if (!p.data?.outputRate && (!p.data?.actualOutputPerSec || new Decimal(p.data.actualOutputPerSec).eq(0))) {

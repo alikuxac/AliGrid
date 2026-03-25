@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 
@@ -7,7 +7,7 @@ export interface PowerTransmitterNodeProps {
     data: any;
 }
 
-export const PowerTransmitterNode: React.FC<PowerTransmitterNodeProps> = ({ id, data }) => {
+export const PowerTransmitterNode: React.FC<PowerTransmitterNodeProps> = memo(({ id, data }) => {
     const edges = useEdges();
     const connectedInputs = edges.filter(e => e.target === id).length;
     const visibleInputs = Math.min(5, Math.max(1, connectedInputs + 1));
@@ -80,4 +80,4 @@ export const PowerTransmitterNode: React.FC<PowerTransmitterNodeProps> = ({ id, 
             </div>
         </div>
     );
-};
+});

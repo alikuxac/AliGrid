@@ -36,13 +36,26 @@ export const FluidEdge: React.FC<EdgeProps> = ({
 
     return (
         <>
+            {/* Invisible thicker path for hit detection */}
+            <path
+                d={edgePath}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={20}
+                className="react-flow__edge-interaction"
+            />
+            {/* Visible path */}
             <path
                 d={edgePath}
                 fill="none"
                 stroke={strokeColor}
                 strokeWidth={selected ? 5 : 3}
                 opacity={opacity}
-                style={selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}}
+                className={isFlowing ? 'fluid-edge' : ''}
+                style={{
+                    ...(selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}),
+                    transition: 'stroke 0.3s ease'
+                }}
             />
 
             <EdgeLabelRenderer>
@@ -63,8 +76,8 @@ export const FluidEdge: React.FC<EdgeProps> = ({
                 }}>
                     {isBottleneck && <span style={{ color: '#ef4444', fontWeight: 'bold' }} title="Bottleneck!">⚠️</span>}
                     <span style={{ color: '#94a3b8', fontWeight: 'bold' }}>Mk.{tier + 1}</span>
-                    <span style={{ color: '#e2e8f0', fontSize: '8px' }}>
-                        {(parseFloat(data?.flow || "0").toFixed(1))}/{(60 * Math.pow(2, tier))}
+                    <span style={{ color: '#e2e8f0', fontSize: '8px', marginLeft: '2px' }}>
+                        <b style={{ color: '#ffffff' }}>{(parseFloat(data?.flow || "0").toFixed(1))}</b> / {(60 * Math.pow(2, tier))}
                     </span>
                 </div>
             </EdgeLabelRenderer>
@@ -85,13 +98,26 @@ export const PowerEdge: React.FC<EdgeProps> = ({
 
     return (
         <>
+            {/* Invisible thicker path for hit detection */}
+            <path
+                d={edgePath}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={20}
+                className="react-flow__edge-interaction"
+            />
+            {/* Visible path */}
             <path
                 d={edgePath}
                 fill="none"
                 stroke={strokeColor}
                 strokeWidth={selected ? 5 : 3}
                 opacity={opacity}
-                style={selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}}
+                className={isFlowing ? 'power-edge' : ''}
+                style={{
+                    ...(selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}),
+                    transition: 'stroke 0.3s ease'
+                }}
             />
 
             <EdgeLabelRenderer>
@@ -112,11 +138,12 @@ export const PowerEdge: React.FC<EdgeProps> = ({
                 }}>
                     {isBottleneck && <span style={{ color: '#ef4444', fontWeight: 'bold' }} title="Bottleneck!">⚠️</span>}
                     <span style={{ color: '#facc15', fontWeight: 'bold' }}>Mk.{tier + 1}</span>
-                    <span style={{ color: '#e2e8f0', fontSize: '8px' }}>
-                        {(parseFloat(data?.flow || "0").toFixed(1))}/{(60 * Math.pow(2, tier))}
+                    <span style={{ color: '#e2e8f0', fontSize: '8px', marginLeft: '2px' }}>
+                        <b style={{ color: '#ffffff' }}>{(parseFloat(data?.flow || "0").toFixed(1))}</b> / {(60 * Math.pow(2, tier))}
                     </span>
                 </div>
             </EdgeLabelRenderer>
+            <style dangerouslySetInnerHTML={{ __html: edgeStyles }} />
         </>
     );
 };

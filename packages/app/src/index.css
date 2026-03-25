@@ -1,0 +1,44 @@
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #0c1020;
+    color: #e2e8f0;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+}
+
+/* Animated Edges */
+.react-flow__edge-path {
+    stroke-width: 2.5;
+    transition: stroke 0.3s ease;
+}
+
+.react-flow__edge.animated path {
+    stroke-dasharray: 8;
+    animation: dashdraw 1s linear infinite;
+}
+
+@keyframes dashdraw {
+    from {
+        stroke-dashoffset: 20;
+    }
+
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
+/* Production Progress Bars */
+.progress-bar-inner {
+    transition: width 0.1s linear;
+}
+
+/* Smooth Number Transitions */
+.node-rate-value {
+    font-variant-numeric: tabular-nums;
+}
+
+.react-flow__node {
+    transition: transform 0.1s ease, box-shadow 0.2s ease;
+}

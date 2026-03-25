@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { Decimal, ResourceType, getStorageCapacity } from '@aligrid/engine';
 
 import { formatNumber } from '../utils/formatter';
+import { Counter } from '../components/Counter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
+import { useStore } from '../store';
 
 export interface StorageNodeProps {
     id: string;
@@ -23,13 +25,15 @@ const RESOURCE_METADATA: Record<string, { icon: string; label: string; color: st
     electricity: { icon: '⚡', label: 'Electricity', color: '#facc15' },
 };
 
-export const StorageNode: React.FC<StorageNodeProps> = ({ id, data }) => {
-    const level = data?.level || 1;
-    const locked = data?.lockedResourceType;
+export const StorageNode: React.FC<StorageNodeProps> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
+    const level = liveData?.level || 1;
+    const locked = liveData?.lockedResourceType;
     const meta = locked ? RESOURCE_METADATA[locked] : null;
-    const amount = data?.currentAmount || new Decimal(0);
+    const amount = liveData?.currentAmount ? new Decimal(liveData.currentAmount as any) : new Decimal(0);
     const capacity = getStorageCapacity(level);
-    const rate = data?.actualInputPerSec || new Decimal(0);
+    const rate = liveData?.actualInputPerSec ? new Decimal(liveData.actualInputPerSec as any) : new Decimal(0);
 
     const amountStr = formatNumber(amount);
     const capacityStr = formatNumber(capacity);
@@ -87,12 +91,12 @@ export const StorageNode: React.FC<StorageNodeProps> = ({ id, data }) => {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                             <div style={{ color: '#4ade80', fontSize: '10px' }}>{rateStr}</div>
                             <div style={{ color: '#f8fafc', fontWeight: 'bold', fontSize: '12px' }}>
-                                {amountStr} <span style={{ color: '#64748b', fontWeight: 'normal' }}>/ {capacityStr}</span>
+                                <Counter value={amount} /> <span style={{ color: '#64748b', fontWeight: 'normal' }}>/ {formatNumber(capacity)}</span>
                             </div>
                         </div>
                         {/* Progress bar */}
                         <div style={{ width: '100%', height: '4px', background: '#0f172a', borderRadius: '2px', overflow: 'hidden' }}>
-                            <div style={{ width: `${percent}%`, height: '100%', background: meta.color, transition: 'width 0.2s linear' }} />
+                            <div className="progress-bar-inner" style={{ width: `${percent}%`, height: '100%', background: meta.color }} />
                         </div>
                     </div>
                 ) : (
@@ -110,4 +114,4 @@ export const StorageNode: React.FC<StorageNodeProps> = ({ id, data }) => {
             />
         </div>
     );
-};
+});

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import { RESOURCE_REGISTRY, Decimal, ResourceType } from '@aligrid/engine';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
@@ -11,7 +11,7 @@ export interface AntennaNodeProps {
     data: NodeData;
 }
 
-export const AntennaNode: React.FC<AntennaNodeProps> = ({ id, data }) => {
+export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
     const cloudLevel = useStore((state) => state.cloudLevel || 1);
     const cloudStorage = useStore((state) => state.cloudStorage || {});
     const capacity = new Decimal(5000).times(Math.pow(2, (cloudLevel || 1) - 1));
@@ -109,4 +109,4 @@ export const AntennaNode: React.FC<AntennaNodeProps> = ({ id, data }) => {
             </div>
         </div>
     );
-};
+});

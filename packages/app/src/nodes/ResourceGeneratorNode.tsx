@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { Decimal, ResourceType, NODE_COSTS, RESOURCE_REGISTRY, getUpgradeCost } from '@aligrid/engine';
 import { useStore } from '../store';
@@ -18,6 +18,7 @@ export interface ResourceGeneratorNodeProps {
 }
 
 import { formatNumber } from '../utils/formatter';
+import { Counter } from '../components/Counter';
 
 const RESOURCE_METADATA: Record<ResourceType, { icon: string; label: string; color: string }> = {
     water: { icon: '💧', label: 'Water Pump', color: '#3b82f6' },
@@ -26,23 +27,25 @@ const RESOURCE_METADATA: Record<ResourceType, { icon: string; label: string; col
     coal: { icon: '🔥', label: 'Coal Miner', color: '#334155' }
 };
 
-export const ResourceGeneratorNode: React.FC<ResourceGeneratorNodeProps> = ({ id, type, data }) => {
+export const ResourceGeneratorNode: React.FC<ResourceGeneratorNodeProps> = memo(({ id, type, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
-    const rateStr = data?.outputRate ? formatNumber(data.outputRate) : "0.0";
-    const level = data?.level || 0;
-    const tier = data?.tier || 0;
-    const meta = RESOURCE_METADATA[data.resourceType] || RESOURCE_METADATA.water;
+    const rateStr = liveData?.outputRate ? formatNumber(liveData.outputRate as any) : "0.0";
+    const level = liveData?.level || 0;
+    const tier = liveData?.tier || 0;
+    const meta = RESOURCE_METADATA[liveData.resourceType] || RESOURCE_METADATA.water;
 
     const cost = getUpgradeCost(type, level);
 
-    const efficiency = data?.efficiency
-        ? (typeof data.efficiency === 'string' ? new Decimal(data.efficiency) : data.efficiency as Decimal)
+    const efficiency = liveData?.efficiency
+        ? (typeof liveData.efficiency === 'string' ? new Decimal(liveData.efficiency) : liveData.efficiency as Decimal)
         : new Decimal(1);
 
-    const status = data.status || 'active';
+    const status = liveData.status || 'active';
     const borderColor = status === 'warning' ? '#ef4444' : status === 'idle' ? '#eab308' : meta.color;
-    const isOff = data.isOff || false;
+    const isOff = liveData.isOff || false;
 
     return (
         <div style={{
@@ -142,7 +145,7 @@ export const ResourceGeneratorNode: React.FC<ResourceGeneratorNodeProps> = ({ id
                         <div style={{ color: '#94a3b8', marginBottom: '2px' }}>Output Rate</div>
                         {(() => {
                             const registryMeta = RESOURCE_REGISTRY[data.resourceType];
-                            return <div style={{ color: '#f8fafc' }}>{rateStr} {registryMeta?.unit || ''}/s</div>;
+                            return <div style={{ color: '#f8fafc' }}><Counter value={liveData?.outputRate || 0} /> {registryMeta?.unit || ''}/s</div>;
                         })()}
                     </div>
                     {/* Status Dot */}
@@ -210,4 +213,4 @@ export const ResourceGeneratorNode: React.FC<ResourceGeneratorNodeProps> = ({ id
             />
         </div>
     );
-};
+});

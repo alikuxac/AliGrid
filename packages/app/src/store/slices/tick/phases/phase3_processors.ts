@@ -6,9 +6,11 @@ import { TickContext } from '../types';
 import { addStat, getEdgeBackpressure, pushToEdge, pushToMultipleEdges } from '../helpers';
 import { isProcessor } from '../../../helpers';
 import { FALLBACK_NODES } from '../../../../config/fallbackNodes';
+import { RESOURCE_STATES } from '../../../constants';
 
 export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
-    const { nextNodes, inEdgesByTarget, outEdgesBySource, dtSeconds, nodeIncoming, edgeBackpressures, nodesById, state } = ctx;
+    const { nextNodes, inEdgesByTarget, outEdgesBySource, dtSeconds, nodeIncoming, edgeBackpressures, nodesById, state, nodeDeltas = {} } = ctx;
+    ctx.nodeDeltas = nodeDeltas;
 
     const assemblersNodes: Node<NodeData>[] = [];
     const processorsNodes: Node<NodeData>[] = [];
@@ -47,7 +49,11 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         }
 
         const Level = node.data.level || 0;
-        const multiplier = Math.pow(2, Level);
+        let multiplier = Math.pow(2, Level);
+        const boost = ctx.nodeBoosts?.[node.id] || 1;
+        if (boost > 1) {
+            multiplier *= boost;
+        }
 
         const recipes = node.data.recipes || (node.data.recipe ? [node.data.recipe] : []);
         let selectedRecipe = recipes[node.data.activeRecipeIndex || 0] || recipes[0];
@@ -107,6 +113,8 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         const reqAmountsMap: Record<string, Decimal> = {};
 
         if (inTypes.length > 0) {
+            const hasSolidInput = inTypes.some(t => (RESOURCE_STATES[t] || 'solid') === 'solid');
+
             for (let i = 0; i < inTypes.length; i++) {
                 const t = inTypes[i];
                 const rate = inRates[i] || new Decimal(1);
@@ -115,7 +123,11 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
                 const amt = bufferObj[t] ? new Decimal(bufferObj[t] as any) : new Decimal(0);
                 const c = amt.dividedBy(reqAmt).floor();
-                if (c.lt(crafts)) crafts = c;
+
+                const matter = RESOURCE_STATES[t] || 'solid';
+                if (matter === 'solid' || !hasSolidInput) {
+                    if (c.lt(crafts)) crafts = c;
+                }
             }
         } else {
             if (crafts.eq(Infinity)) crafts = new Decimal(1);
@@ -258,11 +270,16 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
             const reqCandidates = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(multiplier);
             const outCandidate = (convRate.lt(1) ? new Decimal(1) : convRate).times(multiplier);
 
+            const hasSolidInput = inTypesCandidate.some(t => (RESOURCE_STATES[t] || 'solid') === 'solid');
+
             let candidateCrafts = new Decimal(Infinity);
             for (const t of inTypesCandidate) {
                 const amt = inputBufferObj[t] ? new Decimal(inputBufferObj[t] as any) : new Decimal(0);
                 const crafts = amt.dividedBy(reqCandidates);
-                if (crafts.lt(candidateCrafts)) candidateCrafts = crafts;
+                const matter = RESOURCE_STATES[t] || 'solid';
+                if (matter === 'solid' || !hasSolidInput) {
+                    if (crafts.lt(candidateCrafts)) candidateCrafts = crafts;
+                }
             }
             if (candidateCrafts.eq(Infinity) && inTypesCandidate.length > 0) candidateCrafts = new Decimal(0);
             const fuelCrafts = candidateCrafts;
@@ -347,10 +364,9 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
         for (const t of inTypes) {
             const rt = t as ResourceType;
-            const available = availableMap[t] || new Decimal(0);
-            if (nodeIncoming[node.id]) {
-                nodeIncoming[node.id]![rt] = available.minus(realConsumed);
-            }
+            const currentAmt = inputBufferObj[t] ? new Decimal(inputBufferObj[t] as any) : new Decimal(0);
+            inputBufferObj[t] = Decimal.max(0, currentAmt.minus(realConsumed)).toString();
+
             const inEdges = inEdgesByTarget[node.id] || [];
             const isEdge = inEdges[0];
             if (isEdge) {
@@ -377,6 +393,15 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : effCalculated;
         const smoothedEff = lastEff.times(0.8).plus(effCalculated.times(0.2));
 
-        node.data = { ...node.data, actualInputPerSec: smoothedInput, actualOutputPerSec: smoothedOutput, efficiency: smoothedEff, outputBuffer: { ...bufferObj, [outType]: outputBufferStr }, activeRecipeIndex, inputEfficiency, backpressure: realConsumeRatio.toString() };
+        nodeDeltas[node.id] = {
+            actualInputPerSec: smoothedInput,
+            actualOutputPerSec: smoothedOutput,
+            efficiency: smoothedEff,
+            inputBuffer: inputBufferObj,
+            outputBuffer: { ...bufferObj, [outType]: outputBufferStr },
+            activeRecipeIndex,
+            inputEfficiency,
+            backpressure: realConsumeRatio.toString()
+        };
     }
 }

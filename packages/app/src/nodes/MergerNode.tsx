@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import type { ResourceType } from '@aligrid/engine';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
@@ -12,12 +12,14 @@ export interface MergerNodeProps {
     data: NodeData;
 }
 
-export const MergerNode: React.FC<MergerNodeProps> = ({ id, data }) => {
+export const MergerNode: React.FC<MergerNodeProps> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
     const allEdges = useEdges();
-    const maxInputs = data?.maxInputs || 5;
+    const maxInputs = liveData?.maxInputs || 5;
     const connectedInputs = allEdges.filter((e) => e.target === id).length;
     const visibleInputs = Math.min(Math.max(connectedInputs + 1, 1), maxInputs);
-    const locked = data?.lockedResourceType;
+    const locked = liveData?.lockedResourceType;
     const meta = locked ? RESOURCE_REGISTRY[locked] : null;
 
     const findSourceResourceType = (eSourceId: string, visited = new Set<string>()): string | undefined => {
@@ -144,7 +146,7 @@ export const MergerNode: React.FC<MergerNodeProps> = ({ id, data }) => {
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', height: '16px' }}>
                         {(() => {
                             let totalInputFlow = 0;
-                            const maxInputsCount = data?.maxInputs || 5;
+                            const maxInputsCount = liveData?.maxInputs || 5;
                             for (let i = 0; i < maxInputsCount; i++) {
                                 const edgeForPort = allEdges.find(e => e.target === id && e.targetHandle === `input-${i}`);
                                 const edgeData = edgeForPort?.data as FlowEdgeData | undefined;
@@ -174,4 +176,4 @@ export const MergerNode: React.FC<MergerNodeProps> = ({ id, data }) => {
             </div>
         </div>
     );
-};
+});

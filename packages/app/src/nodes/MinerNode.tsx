@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import { NodeTemplate } from '@aligrid/schema';
 import { RESOURCE_REGISTRY, NODE_COSTS, Decimal, getUpgradeCost } from '@aligrid/engine';
 
 import { useStore } from '../store';
 import { formatNumber } from '../utils/formatter';
+import { Counter } from '../components/Counter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 
 import type { NodeData } from '../store/types';
@@ -12,7 +13,7 @@ import type { NodeData } from '../store/types';
 interface ExtendedTemplate extends NodeTemplate {
     maxBuffer?: string | number;
     resource_type?: string | null;
-    radius?: number | string;
+    radius?: number | null;
 }
 
 export interface MinerNodeProps {
@@ -22,14 +23,17 @@ export interface MinerNodeProps {
     selected?: boolean;
 }
 
-export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }) => {
+export const MinerNode: React.FC<MinerNodeProps> = memo(({ id, type, data, selected }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const allEdges = useEdges();
     const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
-    const originalTemplate = data?.template as ExtendedTemplate | undefined || nodeTemplates.find((t) => t.id === type) as ExtendedTemplate | undefined;
+    const originalTemplate = data?.template as ExtendedTemplate || nodeTemplates.find((t) => t.id === type) as ExtendedTemplate;
 
-    const level = data?.level || 0;
+    // Merge prop data with live stats
+    const liveData = { ...data, ...stats };
+    const level = liveData?.level || 0;
 
     // Calculate cost based on levels
     const cost = getUpgradeCost(type, level);
@@ -47,15 +51,15 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
     }
 
     const template = { ...finalTemplate! };
-    const outType = template.output_type || data?.resourceType || 'iron';
+    const outType = template.output_type || liveData?.resourceType || 'iron';
     const resMeta = RESOURCE_REGISTRY[outType] || { icon: '⚙️', name: outType };
 
     const hasEdges = allEdges.some(e => e.target === id);
-    const efficiency = typeof data?.efficiency === 'object' ? data.efficiency : new Decimal(data?.efficiency ?? 0);
+    const efficiency = typeof liveData?.efficiency === 'object' ? liveData.efficiency : new Decimal(liveData?.efficiency ?? 0);
     const effPercent = efficiency.times(100).toFixed(0);
-    const isRunning = !data?.isOff && efficiency.gt(0);
+    const isRunning = !liveData?.isOff && efficiency.gt(0);
 
-    let borderColor = data?.isOff ? '#f87171' : isRunning ? '#10b981' : '#f59e0b'; // red off, green run, amber warning/idle
+    let borderColor = liveData?.isOff ? '#f87171' : isRunning ? '#10b981' : '#f59e0b'; // red off, green run, amber warning/idle
 
     const bgColor = template.style_bg || '#111827';
 
@@ -132,7 +136,7 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
                             state.toggleNodePower(id);
                         }}
                         style={{
-                            background: data?.isOff ? '#f87171' : '#059669',
+                            background: liveData?.isOff ? '#f87171' : '#059669',
                             border: 'none',
                             color: '#f8fafc',
                             padding: '2px 6px',
@@ -145,7 +149,7 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
                             gap: '2px'
                         }}
                     >
-                        <span>{data?.isOff ? 'OFF' : 'ON'}</span>
+                        <span>{liveData?.isOff ? 'OFF' : 'ON'}</span>
                     </button>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
@@ -171,13 +175,18 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
                 </div>
 
                 <div style={{ textAlign: 'center', fontSize: '11px' }}>
-                    <div>Yield: <b style={{ color: '#34d399' }}>{formatNumber(data?.outputRate ?? String(template.initial_rate || 0))} {resMeta.unit || ''}/s</b></div>
+                    <div>Yield: <b style={{ color: '#34d399' }}>
+                        <Counter value={liveData?.outputRate ?? String(template.initial_rate || 0)} />
+                        {Number(liveData?.boost || 1) > 1 && (
+                            <span style={{ color: '#fb923c' }}> + {formatNumber(new Decimal(liveData?.outputRate || template.initial_rate || 0).times(Number(liveData!.boost) - 1))}</span>
+                        )}
+                        {resMeta.unit || ''}/s</b></div>
                     <div style={{ color: '#94a3b8', fontSize: '9px', marginTop: '2px' }}>
                         Eff: <span style={{ color: isRunning ? '#34d399' : '#f59e0b' }}>{effPercent}%</span>
                     </div>
-                    {data?.powerConsumption && (
+                    {liveData?.powerConsumption && (
                         <div style={{ color: '#94a3b8', fontSize: '9px', marginTop: '2px' }}>
-                            Power: <span style={{ color: '#eab308' }}>{formatNumber(new Decimal(data.powerConsumption).times(efficiency))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s</span>
+                            Power: <span style={{ color: '#eab308' }}>{formatNumber(new Decimal(liveData.powerConsumption).times(efficiency).times(liveData.boost || 1))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s</span>
                         </div>
                     )}
                 </div>
@@ -187,7 +196,7 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '9px' }}>
                         <span style={{ color: '#94a3b8' }}>Producing:</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                            <span>{formatNumber(data?.actualOutputPerSec || 0)} {resMeta.unit || ''}/s</span>
+                            <span><Counter value={liveData?.actualOutputPerSec || 0} /> {resMeta.unit || ''}/s</span>
                             <Handle
                                 type="source"
                                 id={outType}
@@ -243,4 +252,4 @@ export const MinerNode: React.FC<MinerNodeProps> = ({ id, type, data, selected }
             />
         </div>
     );
-};
+});

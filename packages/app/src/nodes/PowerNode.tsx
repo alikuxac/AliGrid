@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { RESOURCE_REGISTRY, Decimal, getUpgradeCost } from '@aligrid/engine';
 import { useStore, NodeData } from '../store';
@@ -6,7 +6,10 @@ import { formatNumber } from '../utils/formatter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 import { FALLBACK_NODES } from '../config/fallbackNodes';
 
-export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => {
+export const PowerNode = memo(({ id, type, data, selected }: NodeProps<NodeData>) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
+
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
@@ -14,10 +17,10 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
     // Find template
     const template = nodeTemplates.find((t) => t.id === type) || FALLBACK_NODES.find(f => f.id === type) || { name: 'Power Node', category: 'power', icon: '⚡' };
 
-    const level = data?.level || 0;
+    const level = liveData?.level || 0;
     const cost = getUpgradeCost(type, level);
 
-    let borderColor = data?.isOff ? '#f87171' : '#f59e0b';
+    let borderColor = liveData?.isOff ? '#f87171' : '#f59e0b';
     const baseRadius = (template as { radius?: number }).radius || 0;
     const radius = baseRadius > 0 ? baseRadius + (level * 20) : 0;
 
@@ -77,7 +80,7 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
                             useStore.getState().toggleNodePower(id);
                         }}
                         style={{
-                            background: data?.isOff ? '#f87171' : '#059669',
+                            background: liveData?.isOff ? '#f87171' : '#059669',
                             border: 'none',
                             color: '#f8fafc',
                             padding: '2px 6px',
@@ -88,11 +91,11 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
                             display: 'flex',
                             alignItems: 'center',
                             gap: '2px',
-                            boxShadow: data?.isOff ? 'none' : '0 0 5px rgba(16, 185, 129, 0.4)'
+                            boxShadow: liveData?.isOff ? 'none' : '0 0 5px rgba(16, 185, 129, 0.4)'
                         }}
                     >
                         <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#f8fafc' }} />
-                        <span>{data?.isOff ? 'OFF' : 'ON'}</span>
+                        <span>{liveData?.isOff ? 'OFF' : 'ON'}</span>
                     </button>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
@@ -107,15 +110,14 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#94a3b8' }}>
                             <span>🔋 BUFFER</span>
                             <span style={{ color: '#6ee7b7', fontWeight: 'bold' }}>
-                                {formatNumber(new Decimal(data?.buffer || 0))} / {formatNumber(new Decimal(data?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))}
+                                {formatNumber(new Decimal(liveData?.buffer || 0))} / {formatNumber(new Decimal(liveData?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))}
                             </span>
                         </div>
                         <div style={{ height: '5px', background: '#334155', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{
-                                width: `${Math.min(100, (parseFloat(String(data?.buffer || 0)) / parseFloat(String(data?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))) * 100)}%`,
+                            <div className="progress-bar-inner" style={{
+                                width: `${Math.min(100, (parseFloat(String(liveData?.buffer || 0)) / parseFloat(String(liveData?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))) * 100)}%`,
                                 height: '100%',
                                 background: '#10b981',
-                                transition: 'width 0.3s ease',
                                 boxShadow: '0 0 4px rgba(16, 185, 129, 0.5)'
                             }} />
                         </div>
@@ -130,18 +132,18 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
                                 onClick={(e) => {
                                     if (isViewOnly) return;
                                     e.stopPropagation();
-                                    useStore.getState().updateNodeData(id, { channel: Math.max(0, (data?.channel ?? 0) - 1) });
+                                    useStore.getState().updateNodeData(id, { channel: Math.max(0, (liveData?.channel ?? 0) - 1) });
                                 }}
                                 style={{ background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
                             >
                                 -
                             </button>
-                            <span style={{ minWidth: '16px', textAlign: 'center', fontSize: '10px', color: '#fff', fontWeight: 'bold' }}>{data?.channel ?? 0}</span>
+                            <span style={{ minWidth: '16px', textAlign: 'center', fontSize: '10px', color: '#fff', fontWeight: 'bold' }}>{liveData?.channel ?? 0}</span>
                             <button
                                 onClick={(e) => {
                                     if (isViewOnly) return;
                                     e.stopPropagation();
-                                    useStore.getState().updateNodeData(id, { channel: (data?.channel ?? 0) + 1 });
+                                    useStore.getState().updateNodeData(id, { channel: (liveData?.channel ?? 0) + 1 });
                                 }}
                                 style={{ background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
                             >
@@ -162,12 +164,12 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
                 }}>
                     <div style={{ color: '#94a3b8', fontSize: '9px', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Power Grid</div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: data?.gridSupply && data?.gridDemand && new Decimal(data.gridSupply).gte(new Decimal(data.gridDemand)) ? '#34d399' : '#f87171' }}>
-                            {formatNumber(new Decimal(data?.gridDemand || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
+                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: liveData?.gridSupply && liveData?.gridDemand && new Decimal(liveData.gridSupply).gte(new Decimal(liveData.gridDemand)) ? '#34d399' : '#f87171' }}>
+                            {formatNumber(new Decimal(liveData?.gridDemand || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
                         </span>
                         <span style={{ color: '#64748b', fontSize: '9px' }}>req of</span>
                         <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#fbbf24' }}>
-                            {formatNumber(new Decimal(data?.gridSupply || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
+                            {formatNumber(new Decimal(liveData?.gridSupply || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
                         </span>
                     </div>
                 </div>
@@ -243,4 +245,4 @@ export const PowerNode = ({ id, type, data, selected }: NodeProps<NodeData>) => 
             />
         </div>
     );
-};
+});

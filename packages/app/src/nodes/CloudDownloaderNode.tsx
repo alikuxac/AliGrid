@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { useStore } from '../store';
 import { RESOURCE_REGISTRY, ResourceType, Decimal } from '@aligrid/engine';
@@ -14,7 +14,7 @@ export interface CloudDownloaderNodeProps {
     };
 }
 
-export const CloudDownloaderNode: React.FC<CloudDownloaderNodeProps> = ({ id, data }) => {
+export const CloudDownloaderNode: React.FC<CloudDownloaderNodeProps> = memo(({ id, data }) => {
     const updateNodeData = useStore((state) => state.updateNodeData);
     const selectedRes = data?.resourceType || 'iron';
     const downloaderTier = useStore((state) => state.downloaderTier) || 0;
@@ -104,4 +104,4 @@ export const CloudDownloaderNode: React.FC<CloudDownloaderNodeProps> = ({ id, da
             </div>
         </div>
     );
-};
+});

@@ -6,6 +6,7 @@ export const nodeTemplates = sqliteTable('node_templates', {
     name: text('name').notNull(),
     category: text('category').notNull(), // 'generator', 'processor', 'storage', 'logistics'
     icon: text('icon'),
+    radius: integer('radius'), // For amplifiers or area-effect nodes
     resource_type: text('resource_type'),
     input_type: text('input_type'),
     input_rates: text('input_rates'),
@@ -13,6 +14,8 @@ export const nodeTemplates = sqliteTable('node_templates', {
     conversion_rate: text('conversion_rate'),
     initial_rate: text('initial_rate'),
     power_demand: text('power_demand'),
+    upgrade_cost_config: text('upgrade_cost_config'), // JSON: { base: { iron: 10 }, multiplier: 2.5 }
+    upgrade_benefit_config: text('upgrade_benefit_config'), // JSON: { type: 'exponential', factor: 2 }
     style_bg: text('style_bg'),
     style_header: text('style_header')
 });

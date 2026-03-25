@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Handle, Position, useEdges } from 'reactflow';
 import { useStore } from '../store';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
-import { RESOURCE_REGISTRY } from '@aligrid/engine';
+import { RESOURCE_REGISTRY, Decimal } from '@aligrid/engine';
 
 import type { NodeData, FlowEdgeData } from '../store/types';
 
@@ -11,9 +11,11 @@ export interface SplitterNodeProps {
     data: NodeData;
 }
 
-export const SplitterNode: React.FC<SplitterNodeProps> = ({ id, data }) => {
+export const SplitterNode: React.FC<SplitterNodeProps> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
     const allEdges = useEdges();
-    const ratios = data?.ratios || [1, 1];
+    const ratios = liveData?.ratios || [1, 1];
     const maxOutputs = 2;
     const totalRatio = ratios.reduce((s, r) => s + r, 0);
     const updateNodeData = useStore((s) => s.updateNodeData);
@@ -146,8 +148,8 @@ export const SplitterNode: React.FC<SplitterNodeProps> = ({ id, data }) => {
                                 />
                                 {(() => {
                                     const inEdge = allEdges.find(e => e.target === id && e.targetHandle === 'input');
-                                    const inputFlow = inEdge?.data ? parseFloat((inEdge.data as { flow: string }).flow || '0') : 0;
-                                    const targetRate = totalRatio > 0 ? (inputFlow * r) / totalRatio : 0;
+                                    const inputFlow = inEdge?.data ? new Decimal((inEdge.data as { flow: string }).flow || '0') : new Decimal(0);
+                                    const targetRate = totalRatio > 0 ? inputFlow.times(r).dividedBy(totalRatio) : new Decimal(0);
                                     const handleEdges = allEdges.filter(e => e.source === id && e.sourceHandle === `output-${i}`);
                                     let actualFlow = 0;
                                     for (const e of handleEdges) {
@@ -155,18 +157,16 @@ export const SplitterNode: React.FC<SplitterNodeProps> = ({ id, data }) => {
                                         if (edgeData?.flow) actualFlow += parseFloat(edgeData.flow.toString());
                                     }
 
-                                    const isCongested = actualFlow > 0 && actualFlow < targetRate;
+                                    const isCongested = new Decimal(actualFlow).gt(0) && new Decimal(actualFlow).lt(targetRate);
 
                                     return (
                                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexGrow: 1 }}>
                                             <span style={{ color: '#22d3ee', fontWeight: 'bold', fontSize: '10px' }}>
-                                                {pct}% ({targetRate.toFixed(1)}{meta?.unit || ''}/s)
+                                                {actualFlow.toFixed(1)}{meta?.unit || ''}/s
                                             </span>
-                                            {isCongested && (
-                                                <span style={{ color: '#f59e0b', fontSize: '9px', marginTop: '1px' }}>
-                                                    Actual: {actualFlow.toFixed(1)}{meta?.unit || ''}/s
-                                                </span>
-                                            )}
+                                            <span style={{ color: '#94a3b8', fontSize: '8px', marginTop: '1px' }}>
+                                                Target: {targetRate.toFixed(1)} ({pct}%)
+                                            </span>
                                         </div>
                                     );
                                 })()}
@@ -184,4 +184,4 @@ export const SplitterNode: React.FC<SplitterNodeProps> = ({ id, data }) => {
             </div>
         </div>
     );
-};
+});

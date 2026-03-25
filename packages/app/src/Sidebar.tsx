@@ -13,7 +13,12 @@ export const Sidebar: React.FC = () => {
     const edgeUpgradeCosts = useStore((state) => state.edgeUpgradeCosts);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const [search, setSearch] = React.useState('');
-    const [activeTab, setActiveTab] = React.useState<'nodes' | 'upgrades'>('nodes');
+    const activeTab = useStore((state) => state.activeTab) || 'nodes';
+    const setActiveTab = useStore((state) => state.setActiveTab);
+    const globalStats = useStore((state) => state.globalStats);
+    const cloudLevel = useStore((state) => state.cloudLevel) || 1;
+    const decCap = new Decimal(5000).times(Math.pow(2, cloudLevel - 1));
+    const upgradeCloudLevel = useStore((state) => state.upgradeCloudLevel);
 
     const nodes = useStore((state) => state.nodes);
 
@@ -104,16 +109,21 @@ export const Sidebar: React.FC = () => {
             <h2 style={{ margin: '0 0 12px 0', fontSize: '18px', color: '#94a3b8' }}>Elements Panel</h2>
 
             {/* Tabs Header */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '16px' }}>
                 <button
                     onClick={() => setActiveTab('nodes')}
-                    style={{ flex: 1, padding: '6px', background: activeTab === 'nodes' ? '#2563eb' : '#334155', border: 'none', color: 'white', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>
+                    style={{ flex: 1, padding: '6px', background: activeTab === 'nodes' ? '#2563eb' : '#334155', border: 'none', color: 'white', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}>
                     Nodes
                 </button>
                 <button
                     onClick={() => setActiveTab('upgrades')}
-                    style={{ flex: 1, padding: '6px', background: activeTab === 'upgrades' ? '#2563eb' : '#334155', border: 'none', color: 'white', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>
+                    style={{ flex: 1, padding: '6px', background: activeTab === 'upgrades' ? '#2563eb' : '#334155', border: 'none', color: 'white', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}>
                     Upgrades
+                </button>
+                <button
+                    onClick={() => setActiveTab('inventory')}
+                    style={{ flex: 1, padding: '6px', background: activeTab === 'inventory' ? '#2563eb' : '#334155', border: 'none', color: 'white', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}>
+                    Inventory
                 </button>
             </div>
 
@@ -316,6 +326,80 @@ export const Sidebar: React.FC = () => {
                                 </div>
                             );
                         })()}
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'inventory' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', alignItems: 'center', borderBottom: '1px solid #374151', paddingBottom: '3px' }}>
+                        <span style={{ color: 'white', fontWeight: 'bold', fontSize: '13px' }}>Storage Capacities</span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {Object.values(RESOURCE_REGISTRY).filter(r => r.isUploadAvailable).map((meta) => {
+                            const res = meta.id;
+                            const cur = cloudStorage[res] || new Decimal(0);
+                            const percent = Math.min(100, (cur.toNumber() / decCap.toNumber()) * 100);
+
+                            return (
+                                <div key={res} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#f3f4f6' }}>
+                                            <span>{meta.icon}</span>
+                                            <span>{meta.label}</span>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <span style={{ fontSize: '11px', color: '#9ca3af' }}>{formatNumber(cur)}/{formatNumber(decCap)}</span>
+                                        </div>
+                                    </div>
+                                    <div style={{ height: '4px', background: '#374151', borderRadius: '2px', overflow: 'hidden' }}>
+                                        <div style={{ width: `${percent}%`, height: '100%', background: meta.color || '#3b82f6', borderRadius: '2px' }} />
+                                    </div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginTop: '1px' }}>
+                                        <span style={{ color: '#10b981' }}>+{((globalStats)?.cloudProduction?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
+                                        <span style={{ color: '#f87171' }}>-{((globalStats)?.cloudConsumption?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Level Upgrade Footer */}
+                    <div style={{ marginTop: '15px', paddingTop: '12px', borderTop: '1px solid #374151', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>Level: <b style={{ color: '#f8fafc' }}>{cloudLevel || 1}</b></span>
+                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>Cap: <b style={{ color: '#a5b4fc' }}>{formatNumber(decCap)}</b></span>
+                        </div>
+
+                        {/* Cost list */}
+                        <div style={{ padding: '6px 8px', background: '#11182760', border: '1px solid #374151', borderRadius: '4px', fontSize: '11px' }}>
+                            <div style={{ color: '#94a3b8', fontSize: '10px', marginBottom: '3px' }}>Cost to Upgrade Level:</div>
+                            {[
+                                { id: 'iron', label: 'Iron', icon: '⛏️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) },
+                                { id: 'copper', label: 'Copper', icon: '⚒️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) }
+                            ].map(item => {
+                                const cur = cloudStorage[item.id] || new Decimal(0);
+                                const isAffordable = cur.gte(item.cost);
+                                return (
+                                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', color: isAffordable ? '#10b981' : '#f87171', marginBottom: '2px' }}>
+                                        <span>{item.icon} {item.label}</span>
+                                        <span>{formatNumber(cur)}/{formatNumber(item.cost)}</span>
+                                    </div>
+                                )
+                            })}
+                        </div>
+
+                        <button
+                            onClick={() => upgradeCloudLevel()}
+                            disabled={isViewOnly}
+                            style={{
+                                width: '100%', background: isViewOnly ? '#4b5563' : '#2563eb', border: 'none', color: 'white',
+                                borderRadius: '4px', padding: '6px', fontSize: '12px', fontWeight: 'bold', cursor: isViewOnly ? 'not-allowed' : 'pointer',
+                                transition: 'background 0.2s'
+                            }}
+                        >
+                            Upgrade Cloud Capacity
+                        </button>
                     </div>
                 </div>
             )}

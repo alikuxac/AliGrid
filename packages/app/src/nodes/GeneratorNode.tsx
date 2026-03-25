@@ -5,6 +5,7 @@ import { RESOURCE_REGISTRY, Decimal, getUpgradeCost } from '@aligrid/engine';
 
 import { useStore } from '../store';
 import { formatNumber } from '../utils/formatter';
+import { Counter } from '../components/Counter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 
 import type { NodeData } from '../store/types';
@@ -21,13 +22,16 @@ export interface GeneratorNodeProps {
 }
 
 export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, data, selected }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
 
-    const originalTemplate = data?.template as ExtendedTemplate | undefined || nodeTemplates.find((t) => t.id === type) as ExtendedTemplate | undefined;
+    const originalTemplate = data?.template as ExtendedTemplate || nodeTemplates.find((t) => t.id === type) as ExtendedTemplate;
 
-    const level = data?.level || 0;
+    // Merge prop data with live stats
+    const liveData = { ...data, ...stats };
+    const level = liveData?.level || 0;
 
     // Calculate cost based on levels
     const cost = getUpgradeCost(type, level);
@@ -53,7 +57,7 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
 
     const outputs = (template.output_type || '').split(',').filter(Boolean).map((o: string) => o.trim());
 
-    const borderColor = data?.isOff ? '#f87171' : '#10b981';
+    const borderColor = liveData?.isOff ? '#f87171' : '#10b981';
     const headerColor = 'rgba(255, 255, 255, 0.04)';
 
     return (
@@ -115,7 +119,7 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
                             state.toggleNodePower(id);
                         }}
                         style={{
-                            background: data?.isOff ? '#f87171' : '#059669',
+                            background: liveData?.isOff ? '#f87171' : '#059669',
                             border: 'none',
                             color: '#f8fafc',
                             padding: '2px 6px',
@@ -126,11 +130,11 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
                             display: 'flex',
                             alignItems: 'center',
                             gap: '2px',
-                            boxShadow: data?.isOff ? 'none' : '0 0 5px rgba(16, 185, 129, 0.4)'
+                            boxShadow: liveData?.isOff ? 'none' : '0 0 5px rgba(16, 185, 129, 0.4)'
                         }}
                     >
                         <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#f8fafc' }} />
-                        <span>{data?.isOff ? 'OFF' : 'ON'}</span>
+                        <span>{liveData?.isOff ? 'OFF' : 'ON'}</span>
                     </button>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
@@ -140,7 +144,7 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
             <div style={{ padding: '10px', fontSize: '10px', color: '#cbd5e1', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div>
                     <span>Yield: </span>
-                    <b style={{ color: '#34d399' }}>{formatNumber(data?.outputRate ?? String(template.initial_rate || 0))}/s</b>
+                    <b style={{ color: '#34d399' }}><Counter value={liveData?.outputRate ?? String(template.initial_rate || 0)} />/s</b>
                 </div>
 
                 {/* Outputs */}
@@ -151,7 +155,7 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
                         gap: '5px',
                         borderTop: '1px solid rgba(255,255,255,0.05)',
                         paddingTop: '5px',
-                        opacity: (data?.actualOutputPerSec && new Decimal(data.actualOutputPerSec).gt(0)) ? 1 : 0.4,
+                        opacity: (liveData?.actualOutputPerSec && new Decimal(liveData.actualOutputPerSec).gt(0)) ? 1 : 0.4,
                         transition: 'opacity 0.2s'
                     }}>
                         <div style={{ color: '#94a3b8', fontSize: '9px', marginBottom: '2px' }}>OUTPUTS:</div>
@@ -163,10 +167,10 @@ export const GeneratorNode: React.FC<GeneratorNodeProps> = memo(({ id, type, dat
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                     <span style={{ fontSize: '9px', color: '#34d399' }}>
-                                        {formatNumber(data?.actualOutputPerSec || 0)}/s
-                                        {data?.outputBuffer?.[output] && new Decimal(data.outputBuffer[output]!).gt(0.01) && (
+                                        <Counter value={liveData?.actualOutputPerSec || 0} />/s
+                                        {liveData?.outputBuffer?.[output] && new Decimal(liveData.outputBuffer[output]!).gt(0.01) && (
                                             <span style={{ color: '#fb923c', marginLeft: '4px' }} title="Internal Buffer">
-                                                ({formatNumber(new Decimal(data.outputBuffer[output]!))})
+                                                (<Counter value={liveData.outputBuffer[output]!} />)
                                             </span>
                                         )}
                                     </span>
