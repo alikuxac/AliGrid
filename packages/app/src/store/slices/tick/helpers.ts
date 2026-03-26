@@ -43,18 +43,35 @@ export const pushToEdge = (ctx: TickContext, edge: Edge, rt: ResourceType, amt: 
     const maxPush = Decimal.max(new Decimal(0), capPerSec.times(ctx.dtSeconds).minus(alreadyPushedAll));
 
     const targetNode = ctx.nodesById[edge.target];
-    const isSink = targetNode?.type === 'sink';
-    const maxBuf = isSink
+    const isSink = targetNode?.type === 'sink' || targetNode?.type === 'antenna';
+    const isLogistics = targetNode?.type === 'splitter' || targetNode?.type === 'merger';
+
+    // Capacity calculation moved inside to support per-resource or global checks
+    const targetLevel = targetNode?.data?.level || 0;
+    const levelMult = Math.pow(2, targetLevel);
+    const resolvedMaxBuf = isSink
         ? new Decimal(Infinity)
-        : (targetNode?.data?.maxBuffer ? new Decimal(targetNode.data.maxBuffer) : new Decimal(5000));
+        : (isLogistics ? new Decimal(1000000) : (targetNode?.data?.maxBuffer ? new Decimal(targetNode.data.maxBuffer) : new Decimal(5000).times(levelMult)));
 
     const bufObj = targetNode?.data?.inputBuffer || {};
-    const currentInBufAll = Object.values(bufObj).reduce((sum: Decimal, v) => sum.plus(new Decimal(v as any || 0)), new Decimal(0));
-    const incomingAll = ctx.nodeIncoming[edge.target]
-        ? Object.values(ctx.nodeIncoming[edge.target]).reduce((s: Decimal, v) => s.plus(v as Decimal), new Decimal(0))
-        : new Decimal(0);
+    const currentAmtForType = new Decimal(bufObj[rt] as any || 0);
+    const incomingForType = ctx.nodeIncoming[edge.target]?.[rt] || new Decimal(0);
 
-    const leftoverSpace = isSink ? new Decimal(Infinity) : Decimal.max(0, maxBuf.minus(currentInBufAll).minus(incomingAll));
+    let leftoverSpace = isSink ? new Decimal(Infinity) : Decimal.max(0, resolvedMaxBuf.minus(currentAmtForType).minus(incomingForType));
+
+    // Special case: Antenna (Uploader) is a sink but still limited by ACTUAL cloud storage capacity
+    if (targetNode?.type === 'antenna') {
+        const curCloudAmt = ctx.nextCloudStorage[rt] || new Decimal(0);
+        const cloudLevel = ctx.get().cloudLevel || 1;
+        const cloudCap = new Decimal(5000).times(Math.pow(2, cloudLevel - 1));
+
+        // Use the SHARED reservation to see what's already been pushed to the cloud in THIS tick
+        const reservedTotal = ctx.cloudConsumptionReservation[rt] || new Decimal(0);
+        const cloudSpace = Decimal.max(0, cloudCap.minus(curCloudAmt).minus(reservedTotal));
+
+        leftoverSpace = Decimal.min(leftoverSpace, cloudSpace);
+    }
+
     const actualPush = Decimal.min(amt, Decimal.min(maxPush, leftoverSpace));
 
     const isBottleneck = maxPush.lt(amt) && maxPush.lte(leftoverSpace);
@@ -64,6 +81,13 @@ export const pushToEdge = (ctx: TickContext, edge: Edge, rt: ResourceType, amt: 
     if (!ctx.edgeFlows[edge.id]) ctx.edgeFlows[edge.id] = {};
     const cur = ctx.edgeFlows[edge.id][rt] || new Decimal(0);
     ctx.edgeFlows[edge.id][rt] = cur.plus(actualPush);
+
+    // If pushing to antenna, update the global reservaton
+    if (targetNode?.type === 'antenna') {
+        const res = ctx.cloudConsumptionReservation[rt] || new Decimal(0);
+        ctx.cloudConsumptionReservation[rt] = res.plus(actualPush);
+    }
+
     return actualPush;
 };
 
@@ -113,4 +137,41 @@ export const getAbsPosition = (ctx: TickContext, n: Node<NodeData>) => {
         }
     }
     return { x, y };
+};
+
+/**
+ * Exponential Moving Average for smoothing UI values like rates and efficiency.
+ * alpha = 1 - exp(-dt / tau)
+ * @param lastVal Previous value (Decimal, string, number)
+ * @param currentVal Current instantaneous value
+ * @param dt Time elapsed in seconds
+ * @param tau Time constant (seconds) - higher means smoother/slower. Default 0.5s.
+ */
+export const smoothValue = (lastVal: any, currentVal: Decimal, dt: number, tau = 0.5): Decimal => {
+    if (dt <= 0) return (lastVal !== undefined && lastVal !== null) ? new Decimal(lastVal) : currentVal;
+
+    // Hard cutoff for zero: if current is 0 and last is small, snap to 0 immediately
+    // This prevents "ghost flow" (lingering numbers like 100-200) when production stops.
+    if (currentVal.eq(0)) {
+        const lastDec = (lastVal !== undefined && lastVal !== null) ? new Decimal(lastVal) : new Decimal(0);
+        if (lastDec.lt(1)) return new Decimal(0);
+        // Faster decay when current is zero
+        tau = tau * 0.4;
+    }
+
+    const alpha = 1 - Math.exp(-dt / tau);
+    const prev = (lastVal !== undefined && lastVal !== null) ? new Decimal(lastVal) : currentVal;
+
+    // Hysteresis: skip update if change is negligible (< 0.05%) 
+    // to prevent UI flicker of tiny decimal fluctuations in steady state
+    if (prev.gt(0) && currentVal.gt(0)) {
+        const diff = currentVal.minus(prev).abs();
+        const pct = diff.dividedBy(prev);
+        if (pct.lt(0.0005) && dt < 1) return prev;
+    }
+
+    const result = prev.times(1 - alpha).plus(currentVal.times(alpha));
+
+    // Final safety snap to zero
+    return result.lt(0.01) ? new Decimal(0) : result;
 };

@@ -6,6 +6,9 @@ import { TickContext, PowerGrid } from '../types';
 import { getAbsPosition } from '../helpers';
 import { FALLBACK_NODES } from '../../../../config/fallbackNodes';
 
+const POWER_BASE_CAPACITY = 1000;
+const WIRELESS_BASE_CAPACITY = 2000;
+
 export const resolvePowerGrid = (ctx: TickContext) => {
     const edges = Object.values(ctx.edgesById);
     const powerEdges = edges.filter((e: Edge) => e.type === 'power' || e.data?.resourceType === 'electricity');
@@ -27,14 +30,27 @@ export const resolvePowerGrid = (ctx: TickContext) => {
 
                 const lv1 = srcNode.data?.level || 0;
                 const lv2 = tgtNode.data?.level || 0;
-                const maxLv = Math.max(lv1, lv2);
-                const maxDist = 500 + (maxLv * 100);
+                const tier = e.data?.tier ?? 0;
+
+                const isPole = srcNode.type === 'powerPole' || tgtNode.type === 'powerPole';
+
+                // Base range for standard machines is 500. 
+                // Power Poles increase range significantly.
+                const baseDist = isPole ? 1200 : 500;
+                const maxDist = baseDist + (tier * 200);
 
                 if (dist > maxDist) {
                     if (!e.data) e.data = {};
                     e.data.isTripped = true;
                     return;
                 }
+
+                // Calculate and store capacity for this edge
+                const baseCap = POWER_BASE_CAPACITY * Math.pow(4, tier);
+                const capMult = isPole ? 2 : 1;
+                if (!e.data) e.data = {};
+                e.data.capacity = baseCap * capMult;
+                e.data.isTripped = false; // Reset if it was tripped before
             }
             powerAdj[e.source].push(e.target);
             powerAdj[e.target].push(e.source);
@@ -99,8 +115,20 @@ export const resolvePowerGrid = (ctx: TickContext) => {
                 supply: new Decimal(0),
                 demand: new Decimal(0),
                 efficiency: new Decimal(1),
-                updatedAccumulators: {} as Record<string, Decimal>
+                updatedAccumulators: {} as Record<string, Decimal>,
+                maxCapacity: Infinity,
+                edgeIds: [] as string[]
             };
+
+            // Associate edges with this component for capacity checking
+            Object.values(ctx.edgesById).forEach((e: Edge) => {
+                if (component.includes(e.source) && component.includes(e.target) && (e.type === 'power' || e.data?.resourceType === 'electricity')) {
+                    newGrid.edgeIds.push(e.id);
+                    const cap = e.data?.capacity || Infinity;
+                    if (cap < newGrid.maxCapacity) newGrid.maxCapacity = cap;
+                }
+            });
+
             grids.push(newGrid);
 
             component.forEach(id => {
@@ -111,6 +139,7 @@ export const resolvePowerGrid = (ctx: TickContext) => {
 
     // 3. Match Consumers and Sum Demand
     const consumerGrids: Record<string, PowerGrid> = {};
+    const channelStats: Record<number, { supply: Decimal; demand: Decimal; capacity: number }> = {};
 
     grids.forEach(grid => {
         grid.consumers.forEach((node: Node<NodeData>) => {
@@ -138,6 +167,17 @@ export const resolvePowerGrid = (ctx: TickContext) => {
             if (!rate) rate = new Decimal(1);
             const outRate = typeof rate === 'object' ? rate : new Decimal(rate);
             grid.supply = grid.supply.plus(outRate);
+        });
+
+        // Sum demand for Virtual Bluetooth Bridges (Transmitters/Receivers)
+        // They also have a capacity limit per channel.
+        grid.producers.forEach(p => {
+            if (p.type === 'powerTransmitter') {
+                const chan = p.data?.channel ?? 0;
+                if (!channelStats[chan]) channelStats[chan] = { supply: new Decimal(0), demand: new Decimal(0), capacity: WIRELESS_BASE_CAPACITY * Math.pow(4, p.data?.level || 0) };
+                // A transmitter "feeds" the channel with its entire connected grid's surplus? 
+                // No, let's keep it simple: Transmitter capacity is the limit of what can cross the bridge.
+            }
         });
 
         const supplySec = grid.supply;
@@ -194,6 +234,14 @@ export const resolvePowerGrid = (ctx: TickContext) => {
         } else {
             grid.productionEfficiency = supplySec.gt(0) ? Decimal.min(1, totalUsefulSec.dividedBy(supplySec)) : new Decimal(1);
         }
+
+        // ═══ Apply Wattage Caps ═══
+        // If the total grid demand exceeds the weakest link, the whole grid throttles.
+        // This is a simplification of power flow.
+        if (grid.demand.gt(grid.maxCapacity)) {
+            const capEfficiency = new Decimal(grid.maxCapacity).dividedBy(grid.demand);
+            grid.efficiency = Decimal.min(grid.efficiency, capEfficiency);
+        }
     });
 
     // ═══ Virtual Flow for Power Edges ═══
@@ -203,6 +251,7 @@ export const resolvePowerGrid = (ctx: TickContext) => {
             const totalFlow = Decimal.min(grid.supply, grid.demand);
             if (!e.data) e.data = {};
             e.data.flow = totalFlow.gt(0) ? totalFlow.toNumber() : 0;
+            e.data.isOverloaded = grid.demand.gt(e.data.capacity || Infinity);
         }
     });
 

@@ -3,7 +3,7 @@ import { Decimal, ResourceType } from '@aligrid/engine';
 import { NodeData, RecipeConfig } from '../../../types';
 import { NodeTemplate } from '@aligrid/schema';
 import { TickContext } from '../types';
-import { addStat, getEdgeBackpressure, pushToEdge, pushToMultipleEdges } from '../helpers';
+import { addStat, getEdgeBackpressure, pushToEdge, pushToMultipleEdges, smoothValue } from '../helpers';
 import { isProcessor } from '../../../helpers';
 import { FALLBACK_NODES } from '../../../../config/fallbackNodes';
 import { RESOURCE_STATES } from '../../../constants';
@@ -30,10 +30,20 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         const currentBuffer = typeof node.data.inputBuffer === 'object' && node.data.inputBuffer ? node.data.inputBuffer : {};
         const bufferObj: Record<string, string> = { ...currentBuffer as any };
 
+        const Level = node.data.level || 0;
+        const multiplierVal = Math.pow(2, Level);
+        const maxBuf = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(5000).times(multiplierVal);
+
         for (const [rt, amt] of Object.entries(incoming)) {
-            if (amt && (amt as Decimal).gt(0)) {
+            const decimalAmt = amt as Decimal;
+            if (decimalAmt && decimalAmt.gt(0)) {
                 const curAmt = bufferObj[rt] ? new Decimal(bufferObj[rt] as any) : new Decimal(0);
-                bufferObj[rt] = curAmt.plus(amt as Decimal).toString();
+                const leftover = Decimal.max(0, maxBuf.minus(curAmt));
+                const actualTaken = Decimal.min(decimalAmt, leftover);
+
+                if (actualTaken.gt(0)) {
+                    bufferObj[rt] = curAmt.plus(actualTaken).toString();
+                }
             }
         }
         node.data.inputBuffer = bufferObj;
@@ -48,8 +58,7 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
             continue;
         }
 
-        const Level = node.data.level || 0;
-        let multiplier = Math.pow(2, Level);
+        let multiplier = multiplierVal;
         const boost = ctx.nodeBoosts?.[node.id] || 1;
         if (boost > 1) {
             multiplier *= boost;
@@ -178,18 +187,32 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
         node.data.outputBuffer = outBuffer;
 
+        const FUEL_RESOURCES = ['coal', 'wood_log', 'leaf', 'lava'];
         for (const edge of (inEdgesByTarget[node.id] || [])) {
-            edgeBackpressures[edge.id] = new Decimal(1);
+            const rtForEdge = edge.data?.resourceType || '';
+            const isFuelEdge = edge.targetHandle === 'fuel';
+            const resourceIsFuel = FUEL_RESOURCES.includes(rtForEdge);
+
+            const currentAmt = bufferObj[rtForEdge] ? new Decimal(bufferObj[rtForEdge] as any) : new Decimal(0);
+            const bp = currentAmt.lt(maxBuf) ? new Decimal(1) : new Decimal(0);
+
+            if ((isFuelEdge && resourceIsFuel) || (!isFuelEdge && !resourceIsFuel) || !edge.targetHandle) {
+                edgeBackpressures[edge.id] = bp;
+            }
         }
 
         const inputPerSec = dtSeconds > 0 ? realConsumed.dividedBy(dtSeconds) : new Decimal(0);
         const outputPerSec = dtSeconds > 0 ? pushedTotalMain.dividedBy(dtSeconds) : new Decimal(0);
+        const smoothedInput = smoothValue(node.data.actualInputPerSec, inputPerSec, dtSeconds, 1.0);
+        const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 1.0);
+        const instantEff = maxCraftsCount.gt(0) ? new Decimal(1) : new Decimal(0);
+        const smoothedEff = smoothValue(node.data.efficiency, instantEff, dtSeconds, 1.0);
 
-        node.data = {
-            ...node.data,
-            actualInputPerSec: inputPerSec,
-            actualOutputPerSec: outputPerSec,
-            efficiency: maxCraftsCount.gt(0) ? new Decimal(1) : new Decimal(0),
+        nodeDeltas[node.id] = {
+            ...nodeDeltas[node.id],
+            actualInputPerSec: smoothedInput,
+            actualOutputPerSec: smoothedOutput,
+            efficiency: smoothedEff,
             inputEfficiency: new Decimal(1),
             inputBuffer: bufferObj,
         };
@@ -201,12 +224,28 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         const currentBuffer = typeof node.data.inputBuffer === 'object' && node.data.inputBuffer ? node.data.inputBuffer : {};
         const inputBufferObj: Record<string, string> = { ...currentBuffer as any };
 
+        const level = node.data.level || 0;
+        let multiplier = Math.pow(2, level);
+        const boost = ctx.nodeBoosts?.[node.id] || 1;
+        if (boost > 1) {
+            multiplier *= boost;
+        }
+        const maxBuf = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(5000).times(multiplier);
+
         let hasNewData = false;
         for (const [rt, amt] of Object.entries(incoming)) {
-            if (amt && (amt as Decimal).gt(0)) {
+            const decimalAmt = amt as Decimal;
+            if (decimalAmt && decimalAmt.gt(0)) {
                 const curAmt = inputBufferObj[rt] ? new Decimal(inputBufferObj[rt] as any) : new Decimal(0);
-                inputBufferObj[rt] = curAmt.plus(amt as Decimal).toString();
-                hasNewData = true;
+
+                // Respect per-resource capacity (usually consumption_per_tick * some buffer multiplier, but we use maxBuf here)
+                const leftover = Decimal.max(0, maxBuf.minus(curAmt));
+                const actualTaken = Decimal.min(decimalAmt, leftover);
+
+                if (actualTaken.gt(0)) {
+                    inputBufferObj[rt] = curAmt.plus(actualTaken).toString();
+                    hasNewData = true;
+                }
             }
         }
         if (hasNewData) {
@@ -222,12 +261,7 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
             node.data = { ...node.data, actualInputPerSec: new Decimal(0), actualOutputPerSec: new Decimal(0), efficiency: new Decimal(0) };
             continue;
         }
-        const level = node.data.level || 0;
-        let multiplier = Math.pow(2, level);
-        const boost = ctx.nodeBoosts?.[node.id] || 1;
-        if (boost > 1) {
-            multiplier *= boost;
-        }
+
 
         let powerEfficiency = node.data.wirelessEfficiency !== undefined ? new Decimal(node.data.wirelessEfficiency) : new Decimal(1);
         const isElectricityProducer = node.data?.recipe?.outputType === 'electricity' || node.type === 'hydroGenerator' || node.type === 'accumulator' || (node.data?.recipes && Array.isArray(node.data.recipes) && (node.data.recipes as RecipeConfig[]).some(r => r.outputType === 'electricity'));
@@ -245,9 +279,9 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         if (recipes.length === 0) continue;
 
         const isMultiInputNode = recipes.length > 1;
-        const inEdges = inEdgesByTarget[node.id] || [];
+        const inEdgesCurrent = inEdgesByTarget[node.id] || [];
 
-        if (isMultiInputNode && inEdges.length === 0) {
+        if (isMultiInputNode && inEdgesCurrent.length === 0) {
             if (nodeIncoming[node.id]) {
                 for (const t of Object.keys(nodeIncoming[node.id])) {
                     nodeIncoming[node.id][t as ResourceType] = new Decimal(0);
@@ -300,23 +334,26 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         }
 
         if (maxCrafts.eq(0)) {
-            const r = recipes[0];
+            const lastIdx = node.data.activeRecipeIndex ?? 0;
+            const r = recipes[lastIdx] || recipes[0];
             selectedRecipe = r;
             inTypes = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: string) => t.trim()) : [];
             const convRate = new Decimal(r.conversionRate);
             reqAmtPerCraft = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(multiplier);
             outputPerCraft = (convRate.lt(1) ? new Decimal(1) : convRate).times(multiplier);
+            activeRecipeIndex = lastIdx;
         }
 
         const outType = selectedRecipe.outputType as ResourceType;
         const availableMap: Record<string, Decimal> = {};
 
+        const activeInTypes = new Set(inTypes);
         for (let j = 0; j < recipes.length; j++) {
             if (j !== activeRecipeIndex) {
                 const r = recipes[j];
                 const rInTypes = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: string) => t.trim()) : [];
                 for (const t of rInTypes) {
-                    if (nodeIncoming[node.id]) {
+                    if (!activeInTypes.has(t) && nodeIncoming[node.id]) {
                         nodeIncoming[node.id][t as ResourceType] = new Decimal(0);
                     }
                 }
@@ -362,16 +399,29 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
         const realConsumeRatio = maxCrafts.gt(0) ? actualCrafts.dividedBy(maxCrafts) : new Decimal(0);
 
+        const FUEL_RESOURCES = ['coal', 'wood_log', 'leaf', 'lava'];
+        const inEdges = inEdgesByTarget[node.id] || [];
+
         for (const t of inTypes) {
             const rt = t as ResourceType;
             const currentAmt = inputBufferObj[t] ? new Decimal(inputBufferObj[t] as any) : new Decimal(0);
-            inputBufferObj[t] = Decimal.max(0, currentAmt.minus(realConsumed)).toString();
+            inputBufferObj[rt] = Decimal.max(0, currentAmt.minus(realConsumed)).toString();
 
-            const inEdges = inEdgesByTarget[node.id] || [];
-            const isEdge = inEdges[0];
-            if (isEdge) {
-                edgeBackpressures[isEdge.id] = realConsumeRatio;
+            // Calculate backpressure for this specific resource type
+            // If we have less than maxBuf, backpressure = 1 (requesting)
+            // If we are full, backpressure = 0 (blocking)
+            const bpForResource = currentAmt.lt(maxBuf) ? new Decimal(1) : new Decimal(0);
+
+            // Find edges providing this resource and update their context-specific backpressure
+            for (const edge of inEdges) {
+                const isFuelEdge = edge.targetHandle === 'fuel';
+                const resourceIsFuel = FUEL_RESOURCES.includes(rt);
+
+                if ((isFuelEdge && resourceIsFuel) || (!isFuelEdge && !resourceIsFuel)) {
+                    edgeBackpressures[edge.id] = bpForResource;
+                }
             }
+
             addStat(ctx, 'consumption', rt, realConsumed);
         }
 
@@ -382,18 +432,16 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         }
 
         const inputPerSec = dtSeconds > 0 ? realConsumed.dividedBy(dtSeconds) : new Decimal(0);
-        const lastInput = node.data.actualInputPerSec ? new Decimal(node.data.actualInputPerSec as any) : inputPerSec;
-        const smoothedInput = lastInput.times(0.8).plus(inputPerSec.times(0.2));
+        const smoothedInput = smoothValue(node.data.actualInputPerSec, inputPerSec, dtSeconds, 1.0);
 
         const outputPerSec = dtSeconds > 0 ? pushedTotal.dividedBy(dtSeconds) : new Decimal(0);
-        const lastOutput = node.data.actualOutputPerSec ? new Decimal(node.data.actualOutputPerSec as any) : outputPerSec;
-        const smoothedOutput = lastOutput.times(0.8).plus(outputPerSec.times(0.2));
+        const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 1.0);
 
         const effCalculated = bp.times(realConsumeRatio).times(powerEfficiency);
-        const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : effCalculated;
-        const smoothedEff = lastEff.times(0.8).plus(effCalculated.times(0.2));
+        const smoothedEff = smoothValue(node.data.efficiency, effCalculated, dtSeconds, 1.0);
 
         nodeDeltas[node.id] = {
+            ...nodeDeltas[node.id],
             actualInputPerSec: smoothedInput,
             actualOutputPerSec: smoothedOutput,
             efficiency: smoothedEff,

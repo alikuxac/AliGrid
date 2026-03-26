@@ -12,6 +12,8 @@ export interface AntennaNodeProps {
 }
 
 export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
     const cloudLevel = useStore((state) => state.cloudLevel || 1);
     const cloudStorage = useStore((state) => state.cloudStorage || {});
     const capacity = new Decimal(5000).times(Math.pow(2, (cloudLevel || 1) - 1));
@@ -19,7 +21,7 @@ export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
     const connectedInputs = allEdges.filter((e) => e.target === id).length;
     const visibleInputs = Math.min(Math.max(connectedInputs + 1, 1), 5);
 
-    const status = data?.status || 'idle';
+    const status = liveData?.status || 'idle';
     const borderColor = status === 'active' ? '#22c55e' : '#14b8a6'; // active green, idle teal
 
     return (
@@ -62,7 +64,9 @@ export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
                     <div style={{ color: '#14b8a6', fontSize: '9px', marginBottom: '2px' }}>INPUTS:</div>
                     {Array.from({ length: visibleInputs }, (_, i) => {
                         const handleId = `input-${i}`;
-                        const rateInfo = data?.incomingRates?.[handleId];
+                        const handleFlowRate = liveData?.handleFlows?.[handleId];
+                        const handleRes = liveData?.handleResourceTypes?.[handleId];
+                        const rateInfo = handleFlowRate && handleRes ? { res: handleRes, rate: handleFlowRate } : liveData?.incomingRates?.[handleId];
 
                         let fallbackRes: string | undefined = undefined;
                         if (!rateInfo) {
@@ -73,15 +77,20 @@ export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
                                 if (srcNode) {
                                     if (srcNode.data?.resourceType) fallbackRes = srcNode.data.resourceType;
                                     else if (srcNode.data?.recipe?.outputType) fallbackRes = srcNode.data.recipe.outputType;
+                                    else if (srcNode.data?.recipes && Array.isArray(srcNode.data.recipes)) {
+                                        const activeIdx = srcNode.data.activeRecipeIndex || 0;
+                                        fallbackRes = srcNode.data.recipes[activeIdx]?.outputType;
+                                    }
                                 }
                             }
                         }
 
-                        const icon = rateInfo ? RESOURCE_REGISTRY[rateInfo.res]?.icon || '❓' : (fallbackRes ? RESOURCE_REGISTRY[fallbackRes]?.icon || '❓' : '📤');
+                        const currentRes = rateInfo?.res || fallbackRes;
+                        const icon = currentRes ? RESOURCE_REGISTRY[currentRes]?.icon || '❓' : '📤';
                         const label = rateInfo
                             ? `${rateInfo.res.charAt(0).toUpperCase() + rateInfo.res.slice(1)} - ${parseFloat(rateInfo.rate).toFixed(1)}/s`
                             : (fallbackRes ? `${fallbackRes.charAt(0).toUpperCase() + fallbackRes.slice(1)} - 0.0/s` : `Line ${i + 1}`);
-                        const isFull = rateInfo && new Decimal(cloudStorage[rateInfo.res as ResourceType] || 0).gte(capacity);
+                        const isFull = currentRes && new Decimal(cloudStorage[currentRes as ResourceType] || 0).gte(capacity);
 
                         return (
                             <div key={handleId} style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative', height: '16px', color: '#e2e8f0', justifyContent: 'space-between' }}>

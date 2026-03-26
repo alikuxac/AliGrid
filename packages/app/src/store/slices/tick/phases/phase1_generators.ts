@@ -2,7 +2,7 @@ import { Node } from 'reactflow';
 import { Decimal, ResourceType } from '@aligrid/engine';
 import { NodeData } from '../../../types';
 import { TickContext } from '../types';
-import { addStat, getEdgeBackpressure, pushToMultipleEdges, pushToEdge } from '../helpers';
+import { addStat, getEdgeBackpressure, pushToMultipleEdges, pushToEdge, smoothValue } from '../helpers';
 import { isGenerator } from '../../../helpers';
 
 export const updateGenerators = (ctx: TickContext) => {
@@ -32,38 +32,42 @@ export const updateGenerators = (ctx: TickContext) => {
 
         const outRate = node.data.outputRate ? new Decimal(node.data.outputRate) : new Decimal(0);
         const maxOutputBuffer = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(100);
-        let potentialGain = outRate.times(dtSeconds);
+
         const boost = ctx.nodeBoosts?.[node.id] || 1;
-        if (boost > 1) {
-            potentialGain = potentialGain.times(boost);
-        }
+        const potentialGain = outRate.times(dtSeconds).times(boost);
+
         const bufferObj = node.data.outputBuffer || {};
         const bucket = bufferObj[resType] ? new Decimal(bufferObj[resType]!) : new Decimal(0);
-        const capacityLeft = Decimal.max(0, maxOutputBuffer.minus(bucket));
-        const actualGain = Decimal.min(potentialGain, capacityLeft);
-        const totalGain = bucket.plus(actualGain);
-        const pumpEff = potentialGain.gt(0) ? actualGain.dividedBy(potentialGain) : new Decimal(1);
 
+        // Push-First Logic: Try to push current buffer + everything we COULD produce
+        const totalToPush = bucket.plus(potentialGain);
         let pushedTotal = new Decimal(0);
-        if (edgeCount > 0) {
-            if (totalGain.gt(0)) {
-                pushedTotal = pushToMultipleEdges(ctx, targetEdges, resType, totalGain);
-            }
-            const remainder = totalGain.minus(pushedTotal);
-            nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: { ...bufferObj, [resType]: remainder.toString() } };
-        } else {
-            // Even without edges, we must persist the accumulated internal buffer
-            nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: { ...bufferObj, [resType]: totalGain.toString() } };
+        if (edgeCount > 0 && totalToPush.gt(0)) {
+            pushedTotal = pushToMultipleEdges(ctx, targetEdges, resType, totalToPush);
         }
+
+        // Update buffer with what didn't make it out
+        const remainder = Decimal.min(maxOutputBuffer, totalToPush.minus(pushedTotal));
+        nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: { ...bufferObj, [resType]: remainder.toString() } };
+
         addStat(ctx, 'production', resType, pushedTotal);
+
         const outputPerSec = dtSeconds > 0 ? pushedTotal.dividedBy(dtSeconds) : new Decimal(0);
-        const lastOutput = node.data.actualOutputPerSec ? new Decimal(node.data.actualOutputPerSec as any) : outputPerSec;
-        const smoothedOutput = lastOutput.times(0.8).plus(outputPerSec.times(0.2));
+        // Sync tau to 0.8 for both machine and wire
+        const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 0.8);
 
-        const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : pumpEff;
-        const smoothedEff = lastEff.times(0.8).plus(pumpEff.times(0.2));
+        // Efficiency is throughput vs potential. 
+        // We use potentialGain as the baseline to show if machine is bottlenecked by wires.
+        const instEff = potentialGain.gt(0)
+            ? Decimal.min(1.0, pushedTotal.dividedBy(potentialGain))
+            : new Decimal(1);
+        const smoothedEff = smoothValue(node.data.efficiency, instEff, dtSeconds, 0.8);
 
-        nodeDeltas[node.id] = { ...nodeDeltas[node.id], efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
+        nodeDeltas[node.id] = {
+            ...nodeDeltas[node.id],
+            efficiency: smoothedEff,
+            actualOutputPerSec: smoothedOutput
+        };
     }
 
     // ═══ Phase 1.5: Miners Pass (Consumes Electricity) ═══
@@ -76,23 +80,14 @@ export const updateGenerators = (ctx: TickContext) => {
         const powerCons = node.data.powerConsumption ? new Decimal(node.data.powerConsumption) : new Decimal(0);
         const reqAmt = powerCons.times(dtSeconds);
 
-        let efficiency = node.data.wirelessEfficiency !== undefined ? new Decimal(node.data.wirelessEfficiency) : new Decimal(1);
+        let wirelessEfficiency = node.data.wirelessEfficiency !== undefined ? new Decimal(node.data.wirelessEfficiency) : new Decimal(1);
 
         const outRate = node.data.outputRate ? new Decimal(node.data.outputRate) : new Decimal(0);
         const maxOutputBuffer = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(100);
 
         const boost = ctx.nodeBoosts?.[node.id] || 1;
-        const potentialGain = outRate.times(dtSeconds).times(efficiency).times(boost);
+        const potentialGain = outRate.times(dtSeconds).times(wirelessEfficiency).times(boost);
         const bufferObj = { ...(node.data.outputBuffer || {}) };
-
-        // 1. Calculate minimum efficiency among all outputs (enforce backpressure)
-        let minEff = new Decimal(1);
-        for (const rType of resTypes) {
-            const bucket = bufferObj[rType] ? new Decimal(bufferObj[rType]!) : new Decimal(0);
-            const capacityLeft = Decimal.max(0, maxOutputBuffer.minus(bucket));
-            const currentEff = potentialGain.gt(0) ? Decimal.min(potentialGain, capacityLeft).dividedBy(potentialGain) : new Decimal(1);
-            if (currentEff.lt(minEff)) minEff = currentEff;
-        }
 
         const targetEdges = outEdgesBySource[node.id] || [];
         const edgeCount = targetEdges.length;
@@ -100,22 +95,19 @@ export const updateGenerators = (ctx: TickContext) => {
         let firstPushedTotal = new Decimal(0);
         let first = true;
 
-        // 2. Process outputs
+        // Process outputs: Each resource tries to push its full potential + existing buffer
         for (const rType of resTypes) {
             const bucket = bufferObj[rType] ? new Decimal(bufferObj[rType]!) : new Decimal(0);
-            const actualGain = potentialGain.times(minEff);
-            const totalGain = bucket.plus(actualGain);
+            const totalToPush = bucket.plus(potentialGain);
 
             let pushedTotal = new Decimal(0);
-            if (edgeCount > 0) {
-                if (totalGain.gt(0)) {
-                    pushedTotal = pushToMultipleEdges(ctx, targetEdges, rType, totalGain);
-                }
-                const remainder = totalGain.minus(pushedTotal);
-                bufferObj[rType] = remainder.toString();
-            } else {
-                bufferObj[rType] = totalGain.toString();
+            if (edgeCount > 0 && totalToPush.gt(0)) {
+                pushedTotal = pushToMultipleEdges(ctx, targetEdges, rType, totalToPush);
             }
+
+            const remainder = Decimal.min(maxOutputBuffer, totalToPush.minus(pushedTotal));
+            bufferObj[rType] = remainder.toString();
+
             addStat(ctx, 'production', rType, pushedTotal);
 
             if (first) {
@@ -126,19 +118,23 @@ export const updateGenerators = (ctx: TickContext) => {
         nodeDeltas[node.id] = { ...nodeDeltas[node.id], outputBuffer: bufferObj };
 
         if (reqAmt.gt(0)) {
-            const actualEff = efficiency.times(minEff);
-            addStat(ctx, 'consumption', 'electricity', reqAmt.times(actualEff));
+            // Power consumption matches output throughput ratio
+            const actualOutEff = potentialGain.gt(0) ? firstPushedTotal.dividedBy(potentialGain) : new Decimal(0);
+            const powerEff = wirelessEfficiency.times(Decimal.min(1.0, actualOutEff));
+            addStat(ctx, 'consumption', 'electricity', reqAmt.times(powerEff));
         }
 
         const outputPerSec = dtSeconds > 0 ? firstPushedTotal.dividedBy(dtSeconds) : new Decimal(0);
-        const lastOutput = node.data.actualOutputPerSec ? new Decimal(node.data.actualOutputPerSec as any) : outputPerSec;
-        const smoothedOutput = lastOutput.times(0.8).plus(outputPerSec.times(0.2));
+        const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 0.8);
 
-        const displayEff = efficiency.times(minEff);
-        const lastEff = node.data.efficiency ? new Decimal(node.data.efficiency as any) : displayEff;
-        const smoothedEff = lastEff.times(0.8).plus(displayEff.times(0.2));
+        const instEff = potentialGain.gt(0) ? Decimal.min(1.0, firstPushedTotal.dividedBy(potentialGain)) : wirelessEfficiency;
+        const smoothedEff = smoothValue(node.data.efficiency, instEff, dtSeconds, 0.8);
 
-        nodeDeltas[node.id] = { ...nodeDeltas[node.id], efficiency: smoothedEff, actualOutputPerSec: smoothedOutput };
+        nodeDeltas[node.id] = {
+            ...nodeDeltas[node.id],
+            efficiency: smoothedEff,
+            actualOutputPerSec: smoothedOutput
+        };
     }
 
     // ═══ Phase 1.6: Cloud Downloaders ═══

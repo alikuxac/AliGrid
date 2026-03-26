@@ -168,7 +168,7 @@ export const Sidebar: React.FC = () => {
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                     {filteredNodes.map((node) => {
                                         const cost = node.template?.cost || NODE_COSTS[node.type] || {};
-                                        const canAfford = Object.entries(cost).every(([r, a]) => (cloudStorage[r] || new Decimal(0)).gte(a as Decimal));
+                                        const canAfford = Object.entries(cost).every(([r, a]) => (useStore.getState() as any).getCloudAmount(r).gte(a as Decimal));
 
                                         const isLimited = category.key === 'generator';
                                         const currentCount = nodes.filter((n: any) => {
@@ -219,7 +219,7 @@ export const Sidebar: React.FC = () => {
                                                     {Object.entries(cost).map(([res, amt]) => {
                                                         const meta = RESOURCE_REGISTRY[res] || { icon: '❓' };
                                                         return (
-                                                            <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '1px', fontSize: '9px', color: (cloudStorage[res] || new Decimal(0)).gte(amt as Decimal) ? '#4ade80' : '#f87171' }}>
+                                                            <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '1px', fontSize: '9px', color: (useStore.getState() as any).getCloudAmount(res).gte(amt as Decimal) ? '#4ade80' : '#f87171' }}>
                                                                 <span>{meta.icon}</span>
                                                                 <span>{formatNumber(amt as Decimal)}</span>
                                                             </div>
@@ -248,7 +248,7 @@ export const Sidebar: React.FC = () => {
                         for (const [r, a] of Object.entries(baseCost)) {
                             cost[r] = (a as Decimal).times(Math.pow(3, tier));
                         }
-                        const canAfford = Object.entries(cost).every(([r, a]) => (cloudStorage[r] || new Decimal(0)).gte(a as Decimal));
+                        const canAfford = (useStore.getState() as any).canAfford(cost);
 
                         return (
                             <div key={key} style={{ background: '#334155', borderRadius: '6px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -258,9 +258,14 @@ export const Sidebar: React.FC = () => {
                                 </div>
                                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                                     {Object.entries(cost).map(([res, amt]) => {
-                                        const meta = RESOURCE_REGISTRY[res] || { icon: '❓' };
+                                        const FALLBACK_ICONS: Record<string, string> = { iron: '🛡️', copper: '🪙', water: '💧', coal: '🔥', lava: '🌋' };
+                                        const normalizedRes = String(res).toLowerCase().trim();
+                                        const meta = RESOURCE_REGISTRY[normalizedRes] || RESOURCE_REGISTRY[res] || { icon: FALLBACK_ICONS[normalizedRes] || FALLBACK_ICONS[res] || '❓' };
+                                        const cur = (useStore.getState() as any).getCloudAmount(res);
+                                        const isAffordable = cur.gte(amt as any);
+
                                         return (
-                                            <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: (cloudStorage[res] || new Decimal(0)).gte(amt as any) ? '#4ade80' : '#f87171' }}>
+                                            <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: isAffordable ? '#4ade80' : '#f87171' }}>
                                                 <span>{meta.icon}</span>
                                                 <span>{formatNumber(amt as any)}</span>
                                             </div>
@@ -305,7 +310,7 @@ export const Sidebar: React.FC = () => {
                                         {Object.entries(dlCost).map(([res, amt]) => {
                                             const meta = RESOURCE_REGISTRY[res] || { icon: '❓' };
                                             return (
-                                                <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: (cloudStorage[res] || new Decimal(0)).gte(amt) ? '#4ade80' : '#f87171' }}>
+                                                <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: (useStore.getState() as any).getCloudAmount(res).gte(amt) ? '#4ade80' : '#f87171' }}>
                                                     <span>{meta.icon}</span>
                                                     <span>{formatNumber(amt)}</span>
                                                 </div>

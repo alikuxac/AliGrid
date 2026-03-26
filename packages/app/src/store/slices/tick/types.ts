@@ -13,6 +13,8 @@ export interface PowerGrid {
     efficiency: Decimal;
     updatedAccumulators: Record<string, Decimal>;
     productionEfficiency?: Decimal;
+    maxCapacity: number;
+    edgeIds: string[];
 }
 
 export interface TickContext {
@@ -31,7 +33,8 @@ export interface TickContext {
     globalConsumption: Partial<Record<ResourceType, Decimal>>;
     cloudProduction: Partial<Record<ResourceType, Decimal>>;
     cloudConsumption: Partial<Record<ResourceType, Decimal>>;
-    nextCloudStorage: Record<string, Decimal>; // Thường là Record<ResourceType, Decimal> nhưng dể string cho an toàn map
+    nextCloudStorage: Record<string, Decimal>;
+    cloudConsumptionReservation: Record<string, Decimal>;
     nextNodes: Node<NodeData>[];
     nodeBoosts?: Record<string, number>;
     nodeDeltas?: Record<string, Partial<NodeData>>; // Track only what changed

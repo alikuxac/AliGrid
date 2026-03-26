@@ -3,6 +3,7 @@ import { Decimal, ResourceType } from '@aligrid/engine';
 import { NodeData } from '../../../types';
 import { TickContext } from '../types';
 import { RESOURCE_STATES } from '../../../constants';
+import { smoothValue } from '../helpers';
 
 export const finalizeNodesAndEdges = (ctx: TickContext) => {
     const { nextNodes, nodeIncoming, edgeFlows, edgeBackpressures, edgeBottlenecks, nodesById, state, dtSeconds, outEdgesBySource, globalProduction, globalConsumption, cloudProduction, cloudConsumption } = ctx;
@@ -20,7 +21,7 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             status = 'active';
         } else if (ticked.type === 'ironGenerator' || ticked.type === 'copperGenerator' || ticked.type === 'coalGenerator') {
             const eff = ticked.data.efficiency ? new Decimal(ticked.data.efficiency as any) : new Decimal(1);
-            status = eff.eq(1) ? 'active' : eff.gt(0) ? 'idle' : 'warning';
+            status = eff.gte(0.99) ? 'active' : eff.gt(0) ? 'active' : 'warning';
         } else if (ticked.type && ['hydroGenerator', 'coalPlant', 'fluidGenerator'].includes(ticked.type)) {
             const out = ticked.data.actualOutputPerSec ? new Decimal(ticked.data.actualOutputPerSec as any) : new Decimal(0);
             status = out.gt(0) ? 'active' : 'idle';
@@ -61,6 +62,37 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             }
         }
 
+        const handleFlows: Record<string, string> = {};
+        const handleResourceTypes: Record<string, string> = {};
+        const incomingEdges = ctx.inEdgesByTarget[liveNode.id] || [];
+
+        incomingEdges.forEach(edge => {
+            let handleId = edge.targetHandle || 'target';
+            if (liveNode.type === 'antenna' && !handleId.startsWith('input-')) {
+                handleId = 'input-0'; // Default to first line for Uploaders if generic
+            }
+            const flow = ctx.edgeFlows[edge.id];
+            if (flow) {
+                // Sum all resource flows into this handle
+                let total = new Decimal(handleFlows[handleId] || 0);
+                let dominantRt = handleResourceTypes[handleId] || '';
+                let maxAmt = new Decimal(-1);
+
+                Object.entries(flow).forEach(([rt, amt]) => {
+                    const decAmt = amt as Decimal;
+                    total = total.plus(decAmt);
+                    if (decAmt.gt(maxAmt)) {
+                        maxAmt = decAmt;
+                        dominantRt = rt;
+                    }
+                });
+
+                if (ctx.dtSeconds > 0) total = total.dividedBy(ctx.dtSeconds);
+                handleFlows[handleId] = total.toString();
+                if (dominantRt) handleResourceTypes[handleId] = dominantRt;
+            }
+        });
+
         // 3. Prepare Node Stats for UI
         finalNodeStats[liveNode.id] = {
             ...ticked.data,
@@ -69,7 +101,9 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             boost: delta.boost || ticked.data.boost || 1,
             boostedCount: delta.boostedCount !== undefined ? delta.boostedCount : ticked.data.boostedCount,
             inputBuffer: combinedInputBuffer,
-            outputBuffer: combinedOutputBuffer
+            outputBuffer: combinedOutputBuffer,
+            handleFlows,
+            handleResourceTypes
         };
 
         // 4. Update Main Node Object (Persistent State)
@@ -117,7 +151,12 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
     const finalEdges = state.edges.map((e: Edge) => {
         // ... (existing edge logic)
         const flow = edgeFlows[e.id];
-        const bp = edgeBackpressures[e.id] || new Decimal(1);
+        const instantBp = edgeBackpressures[e.id] || new Decimal(1);
+
+        // Smooth the backpressure feedback to prevent machine pulsation (binary toggling 1 <-> 0)
+        const lastBpStr = e.data?.backpressureRate || '1';
+        const bp = smoothValue(lastBpStr, instantBp, ctx.dtSeconds, 1.0); // Slow tau for backpressure stability
+
         const isBottleneck = edgeBottlenecks[e.id] || false;
         const isTripped = e.data?.isTripped || false;
         const data = { ...e.data, backpressureRate: bp.toString(), flow: '0', isBottleneck, isTripped };
@@ -141,7 +180,25 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
                 index === self.findIndex((t) => t.target === ed.target && t.targetHandle === ed.targetHandle)
             );
             const outEdgesCount = uniqueTargetEdges.length;
-            if (outEdgesCount > 1) flowVal = flowVal.dividedBy(outEdgesCount);
+            if (outEdgesCount > 1) {
+                // Check if this specific edge has flow in the logic
+                const actualMove = edgeFlows[e.id];
+                const hasActualFlow = actualMove && Object.values(actualMove).some(v => (v as Decimal).gt(0));
+
+                if (!hasActualFlow) {
+                    flowVal = new Decimal(0);
+                    hasFlow = false;
+                } else {
+                    // It has flow, try to distribute the total rate among ACTIVE wires.
+                    // This ensures the sum of wire rates matches the machine's reported output.
+                    const activeEdgesCount = uniqueTargetEdges.filter(ed => {
+                        const move = edgeFlows[ed.id];
+                        return move && Object.values(move).some(v => (v as Decimal).gt(0));
+                    }).length;
+
+                    flowVal = flowVal.dividedBy(Math.max(1, activeEdgesCount));
+                }
+            }
 
             // CLAMP by edge capacity
             dominantRt = srcNode.data.resourceType || 'water';
@@ -153,14 +210,41 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
             const tier = Math.max(edgeTier, globalTier);
             const edgeCap = new Decimal(60 * Math.pow(2, tier));
 
-            if (flowVal.gt(edgeCap)) flowVal = edgeCap;
+            // Aggressive snapping for UI stability
+            if (isBottleneck || flowVal.gte(edgeCap.times(0.98))) {
+                flowVal = edgeCap;
+            } else if (flowVal.gt(edgeCap)) {
+                flowVal = edgeCap;
+            }
+
+            // Smooth the final display value
+            const lastFlowStr = e.data?.flow || '0';
+            flowVal = smoothValue(lastFlowStr, flowVal, ctx.dtSeconds, 1.0); // High stability
 
             data.flow = flowVal.toString();
         } else if (flow && Object.keys(flow).length > 0) {
-            [dominantRt] = Object.entries(flow).sort((a, b) => (b[1] as Decimal).sub(a[1] as Decimal).toNumber())[0];
+            let total = new Decimal(0);
+            Object.entries(flow).forEach(([rt, amt]) => {
+                total = total.plus(amt as Decimal);
+                dominantRt = rt;
+            });
             hasFlow = true;
-            let flowVal = flow[dominantRt as ResourceType] as Decimal;
-            if (dtSeconds > 0) flowVal = flowVal.dividedBy(dtSeconds);
+            let flowVal = ctx.dtSeconds > 0 ? total.dividedBy(ctx.dtSeconds) : new Decimal(0);
+
+            const lastFlowStr = e.data?.flow || '0';
+            flowVal = smoothValue(lastFlowStr, flowVal, ctx.dtSeconds, 0.8);
+
+            const material = RESOURCE_STATES[dominantRt] || 'solid';
+            const edgeTier = e.data?.tier ?? 0;
+            const globalTier = state.edgeTiers[material] || 0;
+            const tier = Math.max(edgeTier, globalTier);
+            const edgeCap = new Decimal(60 * Math.pow(2, tier));
+
+            if (isBottleneck || flowVal.gte(edgeCap.times(0.98))) {
+                flowVal = edgeCap;
+            } else if (flowVal.gt(edgeCap)) {
+                flowVal = edgeCap;
+            }
             data.flow = flowVal.toString();
         } else {
             dominantRt = srcNode?.data?.resourceType || 'water';
@@ -175,41 +259,30 @@ export const finalizeNodesAndEdges = (ctx: TickContext) => {
         (data as any).resourceType = dominantRt;
 
         const matter = RESOURCE_STATES[dominantRt] || 'solid';
-        const matterColors: Record<string, string> = {
-            solid: '#64748b',
-            liquid: '#0284c7',
-            gas: '#059669',
-            power: '#d97706'
-        };
-        const edgeColor = matterColors[matter];
-
+        const isFlowing = hasFlow;
         const edgeType = (e.type === 'power' || dominantRt === 'electricity') ? 'power' : 'fluid';
+
+        let className = `edge-${matter}`;
+        if (isTripped) {
+            className += ' edge-tripped';
+        } else if (isFlowing) {
+            className += ` edge-flowing-${matter}`;
+        }
+
+        // Low flow opacity handling
+        if (!isFlowing || (data.flow && parseFloat(data.flow) < 1)) {
+            className += ' edge-low-flow';
+        }
 
         const finalData = { ...data, tier: Math.max(e.data?.tier ?? 0, state.edgeTiers[matter] || 0) };
 
-        if (hasFlow) {
-            return {
-                ...e,
-                type: edgeType,
-                animated: false,
-                style: {
-                    stroke: isTripped ? '#ef4444' : edgeColor,
-                    strokeWidth: isTripped ? 2.5 : (bp.eq(1) ? 2 : 1.5),
-                    opacity: isTripped ? 1 : (bp.eq(0) ? 0.4 : 1),
-                    strokeDasharray: isTripped ? '5,5' : 'none'
-                },
-                data: finalData
-            };
-        }
         return {
             ...e,
             type: edgeType,
+            className,
             animated: false,
             style: {
-                stroke: isTripped ? '#ef4444' : edgeColor,
-                strokeWidth: isTripped ? 2 : 1,
-                opacity: isTripped ? 0.8 : 0.4,
-                strokeDasharray: isTripped ? '5,5' : 'none'
+                strokeWidth: isTripped ? 3 : (bp.eq(1) ? 2.5 : 2),
             },
             data: finalData
         };

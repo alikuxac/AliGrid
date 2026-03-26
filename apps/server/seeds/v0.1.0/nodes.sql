@@ -43,3 +43,44 @@ VALUES
 ('antenna', 'Uploader', 'logistics', '📡', '#134e4a'),
 ('downloader', 'Downloader', 'logistics', '📥', '#134e4a'),
 ('sink', 'Recycler', 'storage', '🗑️', '#1e3a8a');
+
+-- ═══ VERSIONING SEED ═══
+INSERT OR REPLACE INTO game_versions (id, version) VALUES (1, '0.1.0');
+
+-- ═══ RECIPES SEED ═══
+-- Smelter Recipes
+INSERT OR REPLACE INTO recipes (id, since_version_id, name, duration_seconds) VALUES ('smelter_iron', 1, 'Iron Ingot', 1.0);
+INSERT OR REPLACE INTO recipes (id, since_version_id, name, duration_seconds) VALUES ('smelter_copper', 1, 'Copper Ingot', 1.0);
+
+-- Fluid Generator Recipes
+INSERT OR REPLACE INTO recipes (id, since_version_id, name, duration_seconds) VALUES ('fluid_gen_water', 1, 'Water Power', 1.0);
+INSERT OR REPLACE INTO recipes (id, since_version_id, name, duration_seconds) VALUES ('fluid_gen_lava', 1, 'Lava Power', 1.0);
+
+-- ═══ RECIPE INGREDIENTS ═══
+-- Smelter: Iron
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_iron', 1, 'iron_ore', 1.0);
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_iron', 1, 'coal', 1.0);
+-- Smelter: Copper
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_copper', 1, 'copper_ore', 1.0);
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_copper', 1, 'coal', 1.0);
+-- Fluid Gen: Water
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('fluid_gen_water', 1, 'water', 3.0);
+-- Fluid Gen: Lava
+INSERT OR REPLACE INTO recipe_ingredients (recipe_id, since_version_id, item_id, amount) VALUES ('fluid_gen_lava', 1, 'lava', 1.0);
+
+-- ═══ RECIPE OUTPUTS ═══
+-- Smelter: Iron
+INSERT OR REPLACE INTO recipe_outputs (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_iron', 1, 'iron', 1.0);
+-- Smelter: Copper
+INSERT OR REPLACE INTO recipe_outputs (recipe_id, since_version_id, item_id, amount) VALUES ('smelter_copper', 1, 'copper', 1.0);
+-- Fluid Gen: Water (Electricity)
+INSERT OR REPLACE INTO recipe_outputs (recipe_id, since_version_id, item_id, amount) VALUES ('fluid_gen_water', 1, 'electricity', 1.0);
+-- Fluid Gen: Lava (Electricity)
+INSERT OR REPLACE INTO recipe_outputs (recipe_id, since_version_id, item_id, amount) VALUES ('fluid_gen_lava', 1, 'electricity', 5.0);
+
+-- ═══ NODE RECIPE MAPPING ═══
+INSERT OR REPLACE INTO node_recipes (node_template_id, recipe_id, recipe_version_id) VALUES ('smelter', 'smelter_iron', 1);
+INSERT OR REPLACE INTO node_recipes (node_template_id, recipe_id, recipe_version_id) VALUES ('smelter', 'smelter_copper', 1);
+INSERT OR REPLACE INTO node_recipes (node_template_id, recipe_id, recipe_version_id) VALUES ('hydroGenerator', 'fluid_gen_water', 1);
+INSERT OR REPLACE INTO node_recipes (node_template_id, recipe_id, recipe_version_id) VALUES ('hydroGenerator', 'fluid_gen_lava', 1);
+

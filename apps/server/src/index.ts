@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { drizzle } from 'drizzle-orm/d1';
-import { nodeTemplates, edgeUpgradeCosts } from './db/schema';
+import { nodeTemplates, nodeRecipes, recipes, recipeIngredients, recipeOutputs, edgeUpgradeCosts } from './db/schema';
 
 export interface Env {
     ALIGRID_KV: KVNamespace;
@@ -37,13 +37,55 @@ app.get('/api/load', async (c) => {
     return c.json(JSON.parse(data));
 });
 
-// Get Node Templates
+// Get Node Templates with Joined Recipes
 app.get('/api/nodes', async (c) => {
     try {
         const db = drizzle(c.env.ALIGRID_DB);
-        const results = await db.select().from(nodeTemplates);
-        return c.json(results);
+
+        // 1. Fetch tables
+        const templates = await db.select().from(nodeTemplates).all();
+        const nrMap = await db.select().from(nodeRecipes).all();
+        const rList = await db.select().from(recipes).all();
+        const rIngredients = await db.select().from(recipeIngredients).all();
+        const rOutputs = await db.select().from(recipeOutputs).all();
+
+        // 2. Assemble in memory
+        const assembled = templates.map(t => {
+            // Find recipes for this node
+            const myRecipes = nrMap
+                .filter(nr => nr.nodeTemplateId === t.id)
+                .map(nr => {
+                    const recipe = rList.find(r => r.id === nr.recipeId && r.sinceVersionId === nr.recipeVersionId);
+                    if (!recipe) return null;
+
+                    const ingredients = rIngredients
+                        .filter(ri => ri.recipeId === recipe.id && ri.sinceVersionId === recipe.sinceVersionId)
+                        .map(ri => ri.itemId)
+                        .join(',');
+
+                    const output = rOutputs.find(ro => ro.recipeId === recipe.id && ro.sinceVersionId === recipe.sinceVersionId);
+
+                    return {
+                        id: recipe.id,
+                        name: recipe.name,
+                        inputType: ingredients,
+                        outputType: output?.itemId || '',
+                        conversionRate: output?.amount || 1,
+                        duration: recipe.durationSeconds,
+                        powerDemand: recipe.powerDemand
+                    };
+                })
+                .filter(Boolean);
+
+            return {
+                ...t,
+                recipes: myRecipes.length > 0 ? myRecipes : undefined
+            };
+        });
+
+        return c.json(assembled);
     } catch (err: any) {
+        console.error("Fetch nodes error:", err);
         return c.json({ error: err.message }, 500);
     }
 });

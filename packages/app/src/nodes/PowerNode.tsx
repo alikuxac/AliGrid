@@ -160,9 +160,24 @@ export const PowerNode = memo(({ id, type, data, selected }: NodeProps<NodeData>
                     borderRadius: '6px',
                     border: '1px solid rgba(255,255,255,0.04)',
                     fontSize: '11px',
-                    boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.3)'
+                    boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.3)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
                 }}>
-                    <div style={{ color: '#94a3b8', fontSize: '9px', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Power Grid</div>
+                    {type === 'powerPole' && (
+                        <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '4px', marginBottom: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#fbbf24', fontSize: '9px' }}>
+                                <span>📏 MAX RANGE</span>
+                                <span>1,200 u</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#fbbf24', fontSize: '9px' }}>
+                                <span>⚡ CAPACITY</span>
+                                <span>2.0x BONUS</span>
+                            </div>
+                        </div>
+                    )}
+                    <div style={{ color: '#94a3b8', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Power Grid</div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                         <span style={{ fontSize: '12px', fontWeight: 'bold', color: liveData?.gridSupply && liveData?.gridDemand && new Decimal(liveData.gridSupply).gte(new Decimal(liveData.gridDemand)) ? '#34d399' : '#f87171' }}>
                             {formatNumber(new Decimal(liveData?.gridDemand || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s

@@ -18,9 +18,9 @@ export const createEdgeSlice = (set: any, get: any) => ({
 
             const costs: any = {};
             data.forEach((item: any) => {
-                const { matter, item_id, amount } = item;
+                const { matter, itemId, amount } = item;
                 if (!costs[matter]) costs[matter] = {};
-                costs[matter][item_id] = new Decimal(amount);
+                costs[matter][itemId] = new Decimal(amount);
             });
             set({ edgeUpgradeCosts: costs });
         } catch (err) {
@@ -143,36 +143,30 @@ export const createEdgeSlice = (set: any, get: any) => ({
     },
 
     upgradeEdge: (edgeId: string) => {
-        set((state: any) => {
-            const edge = state.edges.find((e: Edge) => e.id === edgeId);
-            if (!edge) return {};
+        const state = get();
+        const edge = state.edges.find((e: Edge) => e.id === edgeId);
+        if (!edge) return;
 
-            const isPower = edge.type === 'power';
-            const curTier = edge.data?.tier ?? 0;
-            const costRt = isPower ? 'copper' : 'iron';
+        const isPower = edge.type === 'power';
+        const curTier = edge.data?.tier ?? 0;
+        const costRt = isPower ? 'copper' : 'iron';
 
-            const costAmt = new Decimal(20).times(Math.pow(3, curTier));
-            const currentAmt = state.cloudStorage[costRt] || new Decimal(0);
+        const costAmt = new Decimal(20).times(Math.pow(3, curTier));
+        const cost = { [costRt]: costAmt };
 
-            if (currentAmt.lt(costAmt)) {
-                alert(`Not enough ${costRt} to upgrade edge!`);
-                return {};
-            }
+        if (!state.canAfford(cost)) {
+            alert(`Not enough ${costRt} to upgrade edge!`);
+            return;
+        }
 
-            const nextCloudStorage = { ...state.cloudStorage, [costRt]: currentAmt.sub(costAmt) };
-            const nextTier = curTier + 1;
-
-            const updatedEdges = state.edges.map((e: Edge) =>
+        state.deductMaterials(cost);
+        set((s: any) => ({
+            edges: s.edges.map((e: Edge) =>
                 e.id === edgeId
-                    ? { ...e, data: { ...e.data, tier: nextTier } }
+                    ? { ...e, data: { ...e.data, tier: curTier + 1 } }
                     : e
-            );
-
-            return {
-                cloudStorage: nextCloudStorage,
-                edges: updatedEdges
-            };
-        });
+            )
+        }));
         debouncedCloudSave(get());
     },
 });

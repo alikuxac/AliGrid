@@ -1,8 +1,13 @@
 import { Decimal } from '@aligrid/engine';
 
 export const createCloudSlice = (set: any, get: any) => ({
-    cloudStorage: {},
+    cloudStorage: {} as Record<string, Decimal | string>,
     cloudLevel: 1,
+
+    getCloudAmount: (res: string): Decimal => {
+        const val = get().cloudStorage[res] || 0;
+        return val instanceof Decimal ? val : new Decimal(val as any);
+    },
 
     upgradeCloudLevel: () => {
         const level = get().cloudLevel;
@@ -22,7 +27,8 @@ export const createCloudSlice = (set: any, get: any) => ({
     canAfford: (cost: Partial<Record<string, Decimal>>) => {
         const cloud = get().cloudStorage;
         for (const [res, amt] of Object.entries(cost)) {
-            const current = cloud[res] || new Decimal(0);
+            const raw = cloud[res] || 0;
+            const current = raw instanceof Decimal ? raw : new Decimal(raw as any);
             if (current.lt(amt as Decimal)) return false;
         }
         return true;
@@ -32,7 +38,8 @@ export const createCloudSlice = (set: any, get: any) => ({
         set((state: any) => {
             const nextCloud = { ...state.cloudStorage };
             for (const [res, amt] of Object.entries(cost)) {
-                const current = nextCloud[res] || new Decimal(0);
+                const raw = nextCloud[res] || 0;
+                const current = raw instanceof Decimal ? raw : new Decimal(raw as any);
                 nextCloud[res] = current.minus(amt as Decimal);
             }
             return { cloudStorage: nextCloud };

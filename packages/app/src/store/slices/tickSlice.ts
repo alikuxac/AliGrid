@@ -115,6 +115,7 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                 cloudProduction,
                 cloudConsumption,
                 nextCloudStorage,
+                cloudConsumptionReservation: {},
                 nextNodes,
                 nodeDeltas
             };
@@ -165,11 +166,17 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                 resolvePowerGrid(ctx);
             }
 
-            // ═══ Phase 1: Generators ═══
+            // ═══ Phase 2: Propagation (Empty Transit Nodes) ═══
+            // Calling this BEFORE Phase 1 ensures Splitters/Mergers are emptied
+            // from the previous tick's leftovers, creating space for new products.
+            resolvePropagation(ctx);
+            resolvePropagation(ctx);
+
+            // ═══ Phase 1: Generators (Refill Network) ═══
             updateGenerators(ctx);
 
-            // ═══ Phase 2: Propagation (Populate nodeIncoming) ═══
-            resolvePropagation(ctx);
+            // ═══ Phase 2.5: Final Propagation ═══
+            // Catch anything pushed by generators in THIS tick
             resolvePropagation(ctx);
 
             // ═══ Phase 3: Processors & Assemblers (Consume nodeIncoming) ═══

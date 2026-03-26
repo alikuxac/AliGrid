@@ -2,37 +2,14 @@ import React from 'react';
 import { getBezierPath, EdgeProps, EdgeLabelRenderer } from 'reactflow';
 import { useStore } from '../store';
 
-const edgeStyles = `
-  @keyframes fluidFlow {
-    from { stroke-dashoffset: 20; }
-    to { stroke-dashoffset: 0; }
-  }
-  .fluid-edge {
-    stroke-dasharray: 8, 6;
-    animation: fluidFlow 0.6s linear infinite;
-  }
-
-  @keyframes powerPulse {
-    from { stroke-dashoffset: 12; }
-    to { stroke-dashoffset: 0; }
-  }
-  .power-edge {
-    stroke-dasharray: 4, 4;
-    animation: powerPulse 0.25s linear infinite;
-  }
-`;
-
-export const FluidEdge: React.FC<EdgeProps> = ({
-    id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, data, selected
+export const FluidEdge: React.FC<EdgeProps & { className?: string }> = ({
+    id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, data, selected, className
 }) => {
     const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-    const backpressureRate = data?.backpressureRate ?? 1;
     const tier = data?.tier ?? 0;
     const isBottleneck = data?.isBottleneck ?? false;
-    const isFlowing = data?.flow && parseFloat(data.flow) > 0;
     const opacityRaw = style.opacity ?? 1;
     const opacity = typeof opacityRaw === 'number' ? opacityRaw : parseFloat(opacityRaw as any) || 1;
-    const strokeColor = style.stroke || '#3b82f6';
 
     return (
         <>
@@ -48,13 +25,11 @@ export const FluidEdge: React.FC<EdgeProps> = ({
             <path
                 d={edgePath}
                 fill="none"
-                stroke={strokeColor}
                 strokeWidth={selected ? 5 : 3}
                 opacity={opacity}
-                className={isFlowing ? 'fluid-edge' : ''}
+                className={`react-flow__edge-path ${className || ''}`}
                 style={{
-                    ...(selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}),
-                    transition: 'stroke 0.3s ease'
+                    ...(selected ? { filter: `drop-shadow(0 0 6px currentColor) drop-shadow(0 0 12px currentColor)` } : {}),
                 }}
             />
 
@@ -85,16 +60,14 @@ export const FluidEdge: React.FC<EdgeProps> = ({
     );
 };
 
-export const PowerEdge: React.FC<EdgeProps> = ({
-    id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, data, selected
+export const PowerEdge: React.FC<EdgeProps & { className?: string }> = ({
+    id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, data, selected, className
 }) => {
     const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-    const isFlowing = data?.flow && parseFloat(data.flow) > 0;
     const tier = data?.tier ?? 0;
     const isBottleneck = data?.isBottleneck ?? false;
     const opacityRaw = style.opacity ?? 1;
     const opacity = typeof opacityRaw === 'number' ? opacityRaw : parseFloat(opacityRaw as any) || 1;
-    const strokeColor = style.stroke || '#facc15';
 
     return (
         <>
@@ -110,13 +83,11 @@ export const PowerEdge: React.FC<EdgeProps> = ({
             <path
                 d={edgePath}
                 fill="none"
-                stroke={strokeColor}
                 strokeWidth={selected ? 5 : 3}
                 opacity={opacity}
-                className={isFlowing ? 'power-edge' : ''}
+                className={`react-flow__edge-path ${className || ''}`}
                 style={{
-                    ...(selected ? { filter: `drop-shadow(0 0 6px ${strokeColor}) drop-shadow(0 0 12px ${strokeColor})` } : {}),
-                    transition: 'stroke 0.3s ease'
+                    ...(selected ? { filter: `drop-shadow(0 0 6px #facc15) drop-shadow(0 0 12px #facc15)` } : {}),
                 }}
             />
 
@@ -136,14 +107,13 @@ export const PowerEdge: React.FC<EdgeProps> = ({
                     gap: '4px',
                     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.3)'
                 }}>
-                    {isBottleneck && <span style={{ color: '#ef4444', fontWeight: 'bold' }} title="Bottleneck!">⚠️</span>}
+                    {(isBottleneck || data?.isOverloaded) && <span style={{ color: '#ef4444', fontWeight: 'bold' }} title={data?.isOverloaded ? "Overloaded!" : "Bottleneck!"}>⚠️</span>}
                     <span style={{ color: '#facc15', fontWeight: 'bold' }}>Mk.{tier + 1}</span>
                     <span style={{ color: '#e2e8f0', fontSize: '8px', marginLeft: '2px' }}>
-                        <b style={{ color: '#ffffff' }}>{(parseFloat(data?.flow || "0").toFixed(1))}</b> / {(60 * Math.pow(2, tier))}
+                        <b style={{ color: data?.isOverloaded ? '#ef4444' : '#ffffff' }}>{(parseFloat(data?.flow || "0").toFixed(1))}</b> / {data?.capacity || (60 * Math.pow(2, tier))}
                     </span>
                 </div>
             </EdgeLabelRenderer>
-            <style dangerouslySetInnerHTML={{ __html: edgeStyles }} />
         </>
     );
 };

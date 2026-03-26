@@ -52,6 +52,8 @@ export interface NodeData {
     backpressure?: string;
     category?: string;
     channel?: number;
+    handleFlows?: Record<string, string>;
+    handleResourceTypes?: Record<string, string>;
 }
 
 export type RFState = {

@@ -15,6 +15,8 @@ import { GenericNode } from './nodes/GenericNode';
 import { GroupNode } from './nodes/GroupNode';
 import { MinerNode } from './nodes/MinerNode';
 import { GeneratorNode } from './nodes/GeneratorNode';
+import { PowerTransmitterNode } from './nodes/PowerTransmitterNode';
+import { PowerReceiverNode } from './nodes/PowerReceiverNode';
 import { useStore, NodeData } from './store';
 import { FluidEdge, PowerEdge } from './edges/CustomEdges';
 import { Sidebar } from './Sidebar';
@@ -109,8 +111,8 @@ function AppRenderer() {
             splitter: SplitterNode,
             antenna: AntennaNode,
             downloader: CloudDownloaderNode,
-            powerTransmitter: PowerNode,
-            powerReceiver: PowerNode,
+            powerTransmitter: PowerTransmitterNode,
+            powerReceiver: PowerReceiverNode,
             powerPole: PowerNode,
             accumulator: PowerNode,
             generic: GenericNode,

@@ -15,14 +15,22 @@ export interface CloudDownloaderNodeProps {
 }
 
 export const CloudDownloaderNode: React.FC<CloudDownloaderNodeProps> = memo(({ id, data }) => {
+    const stats = useStore((state) => state.nodeStats[id]);
+    const liveData = { ...data, ...stats };
     const updateNodeData = useStore((state) => state.updateNodeData);
-    const selectedRes = data?.resourceType || 'iron';
+    const selectedRes = liveData?.resourceType || 'iron';
     const downloaderTier = useStore((state) => state.downloaderTier) || 0;
-    const rate = data?.outputRate
-        ? (typeof data.outputRate === 'string' ? new Decimal(data.outputRate) : data.outputRate)
+
+    // Theoretical rate for when machine is idle
+    const rate = liveData?.outputRate
+        ? (typeof liveData.outputRate === 'string' ? new Decimal(liveData.outputRate) : liveData.outputRate)
         : new Decimal(1);
     const globalRate = new Decimal(Math.pow(2, downloaderTier));
     const effectiveRate = Decimal.max(rate, globalRate);
+
+    // Live rate from simulation
+    const liveRate = liveData?.actualOutputPerSec ? new Decimal(liveData.actualOutputPerSec as any) : new Decimal(0);
+
     const meta = RESOURCE_REGISTRY[selectedRes] || { icon: '❓', label: 'Unknown', color: '#94a3b8' };
 
     const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -93,7 +101,7 @@ export const CloudDownloaderNode: React.FC<CloudDownloaderNodeProps> = memo(({ i
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a5b4fc' }}>
                         <span>Draining</span>
                     </div>
-                    <span style={{ fontWeight: 'bold', color: '#a5b4fc' }}>{formatNumber(effectiveRate)}/s</span>
+                    <span style={{ fontWeight: 'bold', color: '#a5b4fc' }}>{formatNumber(liveRate.gt(0) ? liveRate : effectiveRate)}/s</span>
                     <Handle
                         type="source"
                         position={Position.Right}

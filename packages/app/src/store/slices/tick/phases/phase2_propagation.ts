@@ -26,76 +26,67 @@ export const resolvePropagation = (ctx: TickContext) => {
                 }
             }
             if (node.type === 'splitter') {
-                const incoming = nodeIncoming[node.id];
-                if (incoming && Object.keys(incoming).length > 0) {
-                    const ratios: number[] = node.data.ratios || [1, 1];
-                    const targetEdges = outEdgesBySource[node.id] || [];
+                const incoming = nodeIncoming[node.id] || {};
+                const ratios: number[] = node.data.ratios || [1, 1];
+                const targetEdges = outEdgesBySource[node.id] || [];
+                const bufferObj = node.data.outputBuffer || {};
+                const currentResTypes = new Set([...Object.keys(incoming), ...Object.keys(bufferObj)]);
 
-                    const activeRatios = ratios.map((r, i) => {
+                for (const rt of currentResTypes) {
+                    const resType = rt as ResourceType;
+                    const incAmt = incoming[resType] || new Decimal(0);
+                    const bufAmt = bufferObj[resType] ? new Decimal(bufferObj[resType]!) : new Decimal(0);
+
+                    let availableTotal = incAmt.plus(bufAmt);
+                    if (availableTotal.lte(0)) continue;
+
+                    let remainingToDistribute = availableTotal;
+                    const currentActiveRatios = ratios.map((r, i) => {
                         const handleEdges = targetEdges.filter((e) => e.sourceHandle === `output-${i}`);
                         return handleEdges.length > 0 ? r : 0;
                     });
 
-                    let remainder: Partial<Record<ResourceType, Decimal>> = {};
-                    for (const [rt, amt] of Object.entries(incoming)) {
-                        remainder[rt as ResourceType] = amt as Decimal;
-                    }
+                    // Sub-iteration for overflow redistribution
+                    for (let subIter = 0; subIter < 3; subIter++) {
+                        const totalActiveRatio = currentActiveRatios.reduce((s, r) => s + r, 0);
+                        if (totalActiveRatio === 0 || remainingToDistribute.lte(0.001)) break;
 
-                    let isProcessingOverflow = true;
-                    // Prevent infinite loops by capping precision passes
-                    let preventInfiniteLoop = 0;
-
-                    while (isProcessingOverflow && preventInfiniteLoop < 5) {
-                        isProcessingOverflow = false;
-                        preventInfiniteLoop++;
-
-                        const totalRatio = activeRatios.reduce((s, r) => s + r, 0);
-                        if (totalRatio === 0) break;
-
-                        let nextRemainder: Partial<Record<ResourceType, Decimal>> = {};
-                        for (const [rt, amt] of Object.entries(remainder)) {
-                            nextRemainder[rt as ResourceType] = amt as Decimal;
-                        }
+                        let pushedInThisSubIter = new Decimal(0);
+                        const subIterStartResources = remainingToDistribute;
 
                         for (let i = 0; i < ratios.length; i++) {
-                            if (activeRatios[i] === 0) continue;
+                            if (currentActiveRatios[i] === 0) continue;
 
-                            const fraction = ratios[i] / totalRatio;
+                            const fraction = ratios[i] / totalActiveRatio;
                             const handleId = `output-${i}`;
                             const handleEdges = targetEdges.filter((e) => e.sourceHandle === handleId);
 
                             if (handleEdges.length > 0) {
-                                let branchFilled = false;
-                                for (const [rt, amt] of Object.entries(remainder)) {
-                                    if ((amt as Decimal).lte(0)) continue;
+                                // Important: Portion is share of WHAT WE STARTED this sub-iteration with
+                                const portion = subIterStartResources.times(fraction);
+                                if (portion.lte(0)) continue;
 
-                                    const portion = (amt as Decimal).times(fraction);
-                                    let totalPushedHandle = pushToMultipleEdges(ctx, handleEdges, rt as ResourceType, portion);
+                                const pushed = pushToMultipleEdges(ctx, handleEdges, resType, portion);
+                                remainingToDistribute = remainingToDistribute.minus(pushed);
+                                pushedInThisSubIter = pushedInThisSubIter.plus(pushed);
 
-                                    nextRemainder[rt as ResourceType] = (nextRemainder[rt as ResourceType] || new Decimal(0)).minus(totalPushedHandle);
-
-                                    // If we failed to push the full portion, this branch is full/bottlenecked.
-                                    // Remove it from the active pool to redirect its overflow to siblings.
-                                    if (totalPushedHandle.lt(portion)) {
-                                        branchFilled = true;
-                                    }
-                                }
-
-                                if (branchFilled) {
-                                    activeRatios[i] = 0;
-                                    isProcessingOverflow = true;
+                                // If blocked, remove this output from subsequent redistributions in THIS tick
+                                if (pushed.lt(portion.times(0.99))) {
+                                    currentActiveRatios[i] = 0;
                                 }
                             }
                         }
 
-                        remainder = nextRemainder;
+                        if (pushedInThisSubIter.lte(0)) break;
                     }
 
-                    nodeIncoming[node.id] = remainder;
-                    if (preventInfiniteLoop > 1 || ratios.length > 0) {
-                        didWork = true;
-                    }
+                    // Remaining amount stays in buffer for next tick
+                    bufferObj[resType] = remainingToDistribute.toString();
+                    if (incoming[resType]) incoming[resType] = new Decimal(0);
+                    didWork = true;
                 }
+                node.data.outputBuffer = bufferObj;
+                delete nodeIncoming[node.id];
             }
         }
         if (!didWork) break;

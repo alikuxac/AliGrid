@@ -9,17 +9,23 @@ body {
 }
 
 /* Animated Edges */
+/* ═══ Optimized Edge Animations (GPU Accelerated) ═══ */
 .react-flow__edge-path {
-    stroke-width: 2.5;
-    transition: stroke 0.3s ease;
+    transition: stroke 0.3s ease, stroke-width 0.2s ease, opacity 0.3s ease;
+    will-change: stroke, stroke-dashoffset;
 }
 
-.react-flow__edge.animated path {
-    stroke-dasharray: 8;
-    animation: dashdraw 1s linear infinite;
+@keyframes edgeFlowSolid {
+    from {
+        stroke-dashoffset: 30;
+    }
+
+    to {
+        stroke-dashoffset: 0;
+    }
 }
 
-@keyframes dashdraw {
+@keyframes edgeFlowFluid {
     from {
         stroke-dashoffset: 20;
     }
@@ -27,6 +33,63 @@ body {
     to {
         stroke-dashoffset: 0;
     }
+}
+
+@keyframes edgePulsePower {
+    from {
+        stroke-dashoffset: 12;
+    }
+
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
+.edge-flowing-solid {
+    stroke-dasharray: 10, 5;
+    animation: edgeFlowSolid 1.5s linear infinite;
+}
+
+.edge-flowing-liquid {
+    stroke-dasharray: 8, 6;
+    animation: edgeFlowFluid 0.8s linear infinite;
+}
+
+.edge-flowing-gas {
+    stroke-dasharray: 6, 8;
+    animation: edgeFlowFluid 0.5s linear infinite;
+}
+
+.edge-flowing-power {
+    stroke-dasharray: 4, 4;
+    animation: edgePulsePower 0.3s linear infinite;
+}
+
+.edge-tripped {
+    stroke: #ef4444 !important;
+    stroke-width: 3 !important;
+    stroke-dasharray: 5, 5;
+    animation: edgeFlowFluid 0.4s linear infinite;
+}
+
+.edge-solid {
+    stroke: #64748b;
+}
+
+.edge-liquid {
+    stroke: #0284c7;
+}
+
+.edge-gas {
+    stroke: #059669;
+}
+
+.edge-power {
+    stroke: #d97706;
+}
+
+.edge-low-flow {
+    opacity: 0.4;
 }
 
 /* Production Progress Bars */

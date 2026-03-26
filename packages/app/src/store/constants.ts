@@ -2,6 +2,7 @@ import { Decimal, ResourceType } from '@aligrid/engine';
 
 export const RESOURCE_STATES: Record<string, 'solid' | 'liquid' | 'gas' | 'power'> = {
     iron: 'solid', copper: 'solid', coal: 'solid',
+    iron_ingot: 'solid', copper_ingot: 'solid',
     water: 'liquid', lava: 'liquid',
     electricity: 'power'
 };

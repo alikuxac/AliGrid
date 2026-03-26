@@ -15,25 +15,66 @@ export const updateAntennas = (ctx: TickContext) => {
         }
     }
 
+    const nextCloudStorageLocal = ctx.nextCloudStorage;
+
+    // 1. Calculate TOTAL requested inflow per ResourceType across ALL antennas/transmitters
+    const totalRequestedByRt: Partial<Record<ResourceType, Decimal>> = {};
+    for (const node of antennasNodes) {
+        const incoming = nodeIncoming[node.id];
+        if (incoming) {
+            for (const [rtStr, amt] of Object.entries(incoming)) {
+                const rt = rtStr as ResourceType;
+                if (RESOURCE_REGISTRY[rt]?.isUploadAvailable) {
+                    totalRequestedByRt[rt] = (totalRequestedByRt[rt] || new Decimal(0)).plus(amt as Decimal);
+                }
+            }
+        }
+    }
+
+    // 2. Calculate Global Acceptance Factors per ResourceType
+    const globalAcceptanceByRt: Partial<Record<ResourceType, Decimal>> = {};
+    const cloudLevel = get().cloudLevel || 1;
+    const globalCloudCap = new Decimal(5000).times(Math.pow(2, cloudLevel - 1));
+
+    for (const rtStr of Object.keys(totalRequestedByRt)) {
+        const rt = rtStr as ResourceType;
+        const totalReq = totalRequestedByRt[rt] || new Decimal(0);
+        const curAmt = nextCloudStorageLocal[rt] || new Decimal(0);
+        const space = Decimal.max(0, globalCloudCap.minus(curAmt));
+
+        if (totalReq.gt(0)) {
+            // Formula: min(1.0, remainingSpace / totalRequested)
+            // No safety factors like +1 here to ensure 100% throughput saturation
+            globalAcceptanceByRt[rt] = Decimal.min(new Decimal(1), space.dividedBy(totalReq));
+        } else {
+            globalAcceptanceByRt[rt] = new Decimal(1);
+        }
+    }
+
+    const incomingRatesAll: Record<string, Record<string, { res: string; rate: string }>> = {};
+
+    // 3. Apply Acceptance to Edges and Consume Items
     for (const node of antennasNodes) {
         const incoming = nodeIncoming[node.id];
         const incomingRates: Record<string, { res: string; rate: string }> = {};
-
         const inEdges = inEdgesByTarget[node.id] || [];
+
+        // Track display rates for UI
         for (const edge of inEdges) {
             const flow = edgeFlows[edge.id];
             if (flow) {
                 for (const [rt, amt] of Object.entries(flow)) {
                     const rateVal = dtSeconds > 0 ? (amt as Decimal).dividedBy(dtSeconds) : new Decimal(0);
-                    if (edge.targetHandle && rateVal.gt(0)) {
-                        incomingRates[edge.targetHandle] = { res: rt, rate: rateVal.toString() };
+                    const targetH = edge.targetHandle || 'input-0';
+                    if (rateVal.gt(0)) {
+                        incomingRates[targetH] = { res: rt, rate: rateVal.toString() };
                     }
                 }
             }
         }
-
         nodeDeltas[node.id] = { ...nodeDeltas[node.id], incomingRates };
 
+        // Handle Backpressures
         for (const edge of inEdges) {
             if (!edge.targetHandle) continue;
             let rt: ResourceType | null = null;
@@ -46,44 +87,30 @@ export const updateAntennas = (ctx: TickContext) => {
                 else if (srcNode && srcNode.data?.resourceType) rt = srcNode.data.resourceType as ResourceType;
             }
 
-            if (rt) {
-                const config = RESOURCE_REGISTRY[rt];
-                if (config && config.isUploadAvailable) {
-                    const cur = nextCloudStorage[rt] || new Decimal(0);
-                    const cap = new Decimal(5000).times(Math.pow(2, (get().cloudLevel || 1) - 1));
-                    const space = Decimal.max(0, cap.minus(cur));
-
-                    const decAmt = incoming?.[rt as ResourceType] || new Decimal(0);
-                    const acceptance = decAmt.gt(0)
-                        ? Decimal.min(space, decAmt).dividedBy(decAmt)
-                        : (space.gt(0) ? new Decimal(1) : new Decimal(0));
-
-                    edgeBackpressures[edge.id] = edgeBackpressures[edge.id]
-                        ? Decimal.min(edgeBackpressures[edge.id], acceptance)
-                        : acceptance;
-                }
+            if (rt && globalAcceptanceByRt[rt]) {
+                const acceptance = globalAcceptanceByRt[rt]!;
+                edgeBackpressures[edge.id] = edgeBackpressures[edge.id]
+                    ? Decimal.min(edgeBackpressures[edge.id], acceptance)
+                    : acceptance;
             }
         }
 
+        // Final Consumption Transfer
         if (incoming) {
             for (const [rtStr, amt] of Object.entries(incoming)) {
                 const rt = rtStr as ResourceType;
                 const decAmt = amt as Decimal;
+                const acceptance = globalAcceptanceByRt[rt] || new Decimal(1);
 
-                const config = RESOURCE_REGISTRY[rt];
-                if (!config || !config.isUploadAvailable) continue;
+                const acceptAmt = decAmt.times(acceptance);
+                if (acceptAmt.gt(0)) {
+                    const cur = nextCloudStorageLocal[rt] || new Decimal(0);
+                    nextCloudStorageLocal[rt] = cur.plus(acceptAmt);
+                    addCloudStat(ctx, 'production', rt, acceptAmt);
 
-                const cur = nextCloudStorage[rt] || new Decimal(0);
-                const cap = new Decimal(5000).times(Math.pow(2, (get().cloudLevel || 1) - 1));
-                const space = Decimal.max(0, cap.minus(cur));
-
-                const accept = Decimal.min(decAmt, space);
-                nextCloudStorage[rt] = cur.plus(accept);
-                addCloudStat(ctx, 'production', rt, accept);
-
-                if (nodeIncoming[node.id]) {
-                    const curInc = nodeIncoming[node.id]![rt] || new Decimal(0);
-                    nodeIncoming[node.id]![rt] = Decimal.max(0, curInc.minus(accept));
+                    // Remove from nodeIncoming so subsequent phases don't double-process 
+                    // (although antenna is usually at the end of the chain)
+                    nodeIncoming[node.id]![rt] = Decimal.max(0, decAmt.minus(acceptAmt));
                 }
             }
         }

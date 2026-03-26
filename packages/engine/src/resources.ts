@@ -31,6 +31,8 @@ export const RESOURCE_REGISTRY: Record<string, ResourceConfig> = {
     gravel: { id: 'gravel', label: 'Gravel', icon: '🪨', color: '#9ca3af', isUploadAvailable: true, type: 'solid' },
     sand: { id: 'sand', label: 'Sand', icon: '🏖️', color: '#fef08a', isUploadAvailable: true, type: 'solid' },
     dust: { id: 'dust', label: 'Dust', icon: '🌫️', color: '#e5e7eb', isUploadAvailable: true, type: 'solid' },
+    iron_ingot: { id: 'iron_ingot', label: 'Iron Ingot', icon: '🛡️', color: '#cbd5e1', isUploadAvailable: true, type: 'solid' },
+    copper_ingot: { id: 'copper_ingot', label: 'Copper Ingot', icon: '🪙', color: '#b45309', isUploadAvailable: true, type: 'solid' },
 };
 
 export const NODE_COSTS: Record<string, Partial<Record<string, Decimal>>> = {
@@ -102,8 +104,8 @@ export const getUpgradeCost = (type: string, level: number, template?: any): Par
     }
 
     if (level >= 10 && !template?.upgrade_cost_config) {
-        cost['iron_ingot'] = new Decimal(5).times(Math.pow(1.4, level - 10)).round();
-        cost['copper_ingot'] = new Decimal(5).times(Math.pow(1.4, level - 10)).round();
+        cost['iron'] = (cost['iron'] || new Decimal(0)).plus(new Decimal(5).times(Math.pow(1.4, level - 10)).round());
+        cost['copper'] = (cost['copper'] || new Decimal(0)).plus(new Decimal(5).times(Math.pow(1.4, level - 10)).round());
     }
 
     return cost;
