@@ -1,43 +1,84 @@
-import React, { memo } from 'react';
-import { Handle, Position, NodeProps } from 'reactflow';
-import { RESOURCE_REGISTRY, Decimal, getUpgradeCost } from '@aligrid/engine';
-import { useStore, NodeData } from '../store';
+import React, { memo, useEffect, useMemo, useRef } from 'react';
+import { Handle, Position, NodeProps, useViewport } from 'reactflow';
+import { RESOURCE_REGISTRY, Decimal, getUpgradeCost, ResourceType } from '@aligrid/engine';
+import { useStore, NodeData, safeDecimal } from '../store';
 import { formatNumber } from '../utils/formatter';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 import { FALLBACK_NODES } from '../config/fallbackNodes';
 
-export const PowerNode = memo(({ id, type, data, selected }: NodeProps<NodeData>) => {
-    const stats = useStore((state) => state.nodeStats[id]);
-    const liveData = { ...data, ...stats };
+const PowerNodeComponent = ({ id, type, data, selected }: NodeProps<NodeData>) => {
+    const { zoom } = useViewport();
+    const compactMode = useStore(state => state.settings.compactMode);
+    const showDetail = zoom > 0.6 && !compactMode;
+    const supplyRef = useRef<HTMLSpanElement>(null);
+    const demandRef = useRef<HTMLSpanElement>(null);
+    const bufferTextRef = useRef<HTMLSpanElement>(null);
+    const bufferBarRef = useRef<HTMLDivElement>(null);
 
+    const level = useStore(state => state.nodes.find(n => n.id === id)?.data?.level ?? 0);
+    const isOff = useStore(state => state.nodes.find(n => n.id === id)?.data?.isOff ?? false);
+    const channel = useStore(state => state.nodes.find(n => n.id === id)?.data?.channel ?? 0);
     const cloudStorage = useStore((state) => state.cloudStorage);
     const isViewOnly = useStore((state) => state.isViewOnly);
     const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
 
+    useEffect(() => {
+        const unsubscribe = useStore.subscribe(
+            state => state.nodeStats?.[id],
+            (stats) => {
+                if (!stats) return;
+                try {
+                    const supply = safeDecimal(stats.gridSupply || 0);
+                    const demand = safeDecimal(stats.gridDemand || 0);
+
+                    if (supplyRef.current) supplyRef.current.innerText = `${formatNumber(supply)} W/s`;
+                    if (demandRef.current) {
+                        demandRef.current.innerText = `${formatNumber(demand)} W/s`;
+                        demandRef.current.style.color = supply.gte(demand) ? '#34d399' : '#f87171';
+                    }
+
+                    if (type === 'accumulator') {
+                        const buffer = safeDecimal(stats.buffer || 0);
+                        const maxBuf = safeDecimal(stats.maxBuffer || 5000);
+                        if (bufferTextRef.current) bufferTextRef.current.innerText = `${formatNumber(buffer)} / ${formatNumber(maxBuf)}`;
+                        if (bufferBarRef.current) {
+                            const pct = Math.min(100, (buffer.dividedBy(maxBuf).toNumber() * 100));
+                            bufferBarRef.current.style.width = `${pct}%`;
+                        }
+                    }
+                } catch (e) { }
+            }
+        );
+        return unsubscribe;
+    }, [id, type]);
+
     // Find template
     const template = nodeTemplates.find((t) => t.id === type) || FALLBACK_NODES.find(f => f.id === type) || { name: 'Power Node', category: 'power', icon: '⚡' };
 
-    const level = liveData?.level || 0;
     const cost = getUpgradeCost(type, level);
 
-    let borderColor = liveData?.isOff ? '#f87171' : '#f59e0b';
+    const status = isOff ? 'off' : 'active';
+    const accentColor = isOff ? '#ef4444' : '#f59e0b';
+
     const baseRadius = (template as { radius?: number }).radius || 0;
     const radius = baseRadius > 0 ? baseRadius + (level * 20) : 0;
 
+    const nodeStyles = useMemo(() => ({
+        '--node-accent': accentColor,
+    } as React.CSSProperties), [accentColor]);
+
+    if (!showDetail) {
+        return (
+            <div className="glass-node" style={{ ...nodeStyles, width: '64px', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ fontSize: '32px' }}>{template.icon || '⚡'}</div>
+                <Handle type="target" position={Position.Left} id="electricity" style={{ left: '-4px', background: '#ed610b', width: '8px', height: '8px', border: '1.5px solid #0d1122' }} />
+                <Handle type="source" position={Position.Right} id="electricity" style={{ right: '-4px', background: '#eab308', width: '8px', height: '8px', border: '1.5px solid #0d1122' }} />
+            </div>
+        );
+    }
+
     return (
-        <div style={{
-            background: 'rgba(15, 23, 42, 0.88)',
-            backdropFilter: 'blur(8px)',
-            border: `1.2px solid ${borderColor}`,
-            borderRadius: '8px',
-            minWidth: '240px',
-            color: '#f8fafc',
-            fontFamily: 'monospace',
-            overflow: 'visible',
-            boxShadow: `0 12px 24px -6px rgba(0, 0, 0, 0.6), 0 0 16px ${borderColor}1a`,
-            position: 'relative',
-            transition: 'all 0.2s ease'
-        }}>
+        <div className="glass-node" style={{ ...nodeStyles, minWidth: '240px', padding: '16px' }}>
             {/* Wireless Radius Circle */}
             {radius > 0 && selected && (
                 <div style={{
@@ -56,208 +97,157 @@ export const PowerNode = memo(({ id, type, data, selected }: NodeProps<NodeData>
             )}
 
             {/* Header */}
-            <div style={{
-                background: `linear-gradient(90deg, ${borderColor}1a, rgba(15, 23, 42, 0))`,
-                padding: '8px 12px',
-                borderBottom: `1px solid ${borderColor}33`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '6px',
-                fontSize: '11px'
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '13px' }}>{template.icon || '⚡'}</span>
-                    <span style={{ fontWeight: 'bold' }}>{template.name}</span>
+            <div className="node-header">
+                <div className="node-icon-ring" style={{ background: `linear-gradient(135deg, ${accentColor}33, transparent)` }}>
+                    {template.icon || '⚡'}
                 </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    {level > 0 && <span style={{ fontSize: '9px', color: '#94a3b8' }}>Lv.{level}</span>}
-                    <button
-                        onClick={(e) => {
-                            if (isViewOnly) return;
-                            e.stopPropagation();
-                            useStore.getState().toggleNodePower(id);
-                        }}
-                        style={{
-                            background: liveData?.isOff ? '#f87171' : '#059669',
-                            border: 'none',
-                            color: '#f8fafc',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            fontSize: '9px',
-                            fontWeight: 'bold',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '2px',
-                            boxShadow: liveData?.isOff ? 'none' : '0 0 5px rgba(16, 185, 129, 0.4)'
-                        }}
-                    >
-                        <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#f8fafc' }} />
-                        <span>{liveData?.isOff ? 'OFF' : 'ON'}</span>
-                    </button>
+                <div className="node-title-group">
+                    <div className="node-title">{template.name}</div>
+                    <div className="node-level">Level {level} Power Infrastructure</div>
+                </div>
+                <div style={{ marginLeft: 'auto' }}>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
             </div>
 
-            {/* Body */}
-            <div style={{ padding: '10px', fontSize: '10px', color: '#cbd5e1', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {/* Status & Power Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: '8px', marginBottom: '12px' }}>
+                <div className={`status-dot ${!isOff ? 'status-active' : ''}`} style={{ background: isOff ? '#ef4444' : undefined }} />
+                <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#f8fafc', letterSpacing: '0.05em' }}>
+                    {status.toUpperCase()}
+                </span>
 
-                {/* Buffer Bar for Accumulator */}
-                {type === 'accumulator' && (
-                    <div style={{ background: '#1e293b', borderRadius: '4px', padding: '6px', border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#94a3b8' }}>
-                            <span>🔋 BUFFER</span>
-                            <span style={{ color: '#6ee7b7', fontWeight: 'bold' }}>
-                                {formatNumber(new Decimal(liveData?.buffer || 0))} / {formatNumber(new Decimal(liveData?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))}
-                            </span>
-                        </div>
-                        <div style={{ height: '5px', background: '#334155', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div className="progress-bar-inner" style={{
-                                width: `${Math.min(100, (parseFloat(String(liveData?.buffer || 0)) / parseFloat(String(liveData?.maxBuffer || (template as { maxBuffer?: string | number }).maxBuffer || 5000))) * 100)}%`,
-                                height: '100%',
-                                background: '#10b981',
-                                boxShadow: '0 0 4px rgba(16, 185, 129, 0.5)'
-                            }} />
-                        </div>
+                <button
+                    onClick={(e) => {
+                        if (isViewOnly) return;
+                        e.stopPropagation();
+                        useStore.getState().toggleNodePower(id);
+                    }}
+                    className="nodrag"
+                    style={{
+                        marginLeft: 'auto',
+                        background: isOff ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                        border: `1px solid ${isOff ? '#ef4444' : '#10b981'}`,
+                        color: isOff ? '#fca5a5' : '#6ee7b7',
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontSize: '9px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer'
+                    }}
+                >
+                    {isOff ? 'POWER ON' : 'POWER OFF'}
+                </button>
+            </div>
+
+            {/* Buffer for Accumulator */}
+            {type === 'accumulator' && (
+                <div className="resource-card" style={{ borderLeft: '2px solid #10b981', marginBottom: '12px' }}>
+                    <div className="resource-info">
+                        <div className="resource-name">🔋 Storage Buffer</div>
+                        <span ref={bufferTextRef} style={{ fontSize: '11px', color: '#6ee7b7', fontWeight: 'bold' }}>0 / 0</span>
                     </div>
-                )}
-
-                {['powerTransmitter', 'powerReceiver'].includes(type) && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,0,0,0.15)', padding: '6px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
-                        <span style={{ color: '#94a3b8', fontSize: '9px' }}>📡 CHANNEL</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                            <button
-                                onClick={(e) => {
-                                    if (isViewOnly) return;
-                                    e.stopPropagation();
-                                    useStore.getState().updateNodeData(id, { channel: Math.max(0, (liveData?.channel ?? 0) - 1) });
-                                }}
-                                style={{ background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
-                            >
-                                -
-                            </button>
-                            <span style={{ minWidth: '16px', textAlign: 'center', fontSize: '10px', color: '#fff', fontWeight: 'bold' }}>{liveData?.channel ?? 0}</span>
-                            <button
-                                onClick={(e) => {
-                                    if (isViewOnly) return;
-                                    e.stopPropagation();
-                                    useStore.getState().updateNodeData(id, { channel: (liveData?.channel ?? 0) + 1 });
-                                }}
-                                style={{ background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
-                            >
-                                +
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Grid Load for Power Nodes */}
-                <div style={{
-                    padding: '8px',
-                    background: 'rgba(0,0,0,0.25)',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(255,255,255,0.04)',
-                    fontSize: '11px',
-                    boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.3)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px'
-                }}>
-                    {type === 'powerPole' && (
-                        <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '4px', marginBottom: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#fbbf24', fontSize: '9px' }}>
-                                <span>📏 MAX RANGE</span>
-                                <span>1,200 u</span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#fbbf24', fontSize: '9px' }}>
-                                <span>⚡ CAPACITY</span>
-                                <span>2.0x BONUS</span>
-                            </div>
-                        </div>
-                    )}
-                    <div style={{ color: '#94a3b8', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚡ Power Grid</div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: liveData?.gridSupply && liveData?.gridDemand && new Decimal(liveData.gridSupply).gte(new Decimal(liveData.gridDemand)) ? '#34d399' : '#f87171' }}>
-                            {formatNumber(new Decimal(liveData?.gridDemand || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
-                        </span>
-                        <span style={{ color: '#64748b', fontSize: '9px' }}>req of</span>
-                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#fbbf24' }}>
-                            {formatNumber(new Decimal(liveData?.gridSupply || 0))} {RESOURCE_REGISTRY['electricity']?.unit || ''}/s
-                        </span>
+                    <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', marginTop: '6px', overflow: 'hidden' }}>
+                        <div ref={bufferBarRef} style={{ width: '0%', height: '100%', background: '#10b981', boxShadow: '0 0 8px rgba(16, 185, 129, 0.5)' }} />
                     </div>
                 </div>
+            )}
 
-                {/* Upgrade Button */}
-                {Object.keys(cost).length > 0 && (
-                    <div style={{ marginTop: '4px', paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
-                        <div style={{ fontSize: '9px', color: '#94a3b8', marginBottom: '4px' }}>Cost to Upgrade:</div>
-                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                            {Object.entries(cost).map(([res, amt]) => {
-                                const meta = RESOURCE_REGISTRY[res] || { icon: '❓' };
-                                const cur = cloudStorage[res] || new Decimal(0);
-                                const isAffordable = cur.gte(amt as Decimal);
-                                return (
-                                    <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '9px', color: isAffordable ? '#4ade80' : '#f87171' }}>
-                                        <span>{meta.icon}</span>
-                                        <span>{formatNumber(amt as Decimal)}</span>
-                                    </div>
-                                );
-                            })}
-                        </div>
+            {/* Channel Selection for wireless power */}
+            {['powerTransmitter', 'powerReceiver'].includes(type) && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,0,0,0.15)', padding: '8px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '12px' }}>
+                    <span style={{ color: '#94a3b8', fontSize: '9px', fontWeight: 'bold' }}>📡 FREQUENCY CHANNEL</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <button
                             onClick={(e) => {
                                 if (isViewOnly) return;
                                 e.stopPropagation();
-                                useStore.getState().upgradeNode(id);
+                                useStore.getState().updateNodeData(id, { channel: Math.max(0, channel - 1) });
                             }}
-                            style={{
-                                width: '100%',
-                                background: '#2563eb',
-                                border: 'none',
-                                color: 'white',
-                                borderRadius: '4px',
-                                padding: '4px',
-                                fontSize: '10px',
-                                fontWeight: 'bold',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s',
-                            }}
+                            className="nodrag"
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', width: '20px', height: '20px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                         >
-                            Upgrade
+                            -
+                        </button>
+                        <span style={{ minWidth: '16px', textAlign: 'center', fontSize: '12px', color: '#fff', fontWeight: '800' }}>{channel}</span>
+                        <button
+                            onClick={(e) => {
+                                if (isViewOnly) return;
+                                e.stopPropagation();
+                                useStore.getState().updateNodeData(id, { channel: channel + 1 });
+                            }}
+                            className="nodrag"
+                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', width: '20px', height: '20px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        >
+                            +
                         </button>
                     </div>
-                )}
+                </div>
+            )}
+
+            {/* Grid Metrics */}
+            <div style={{ padding: '10px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                <div style={{ color: '#94a3b8', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>⚡ GRID TELEMETRY</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '10px', color: '#64748b' }}>DEMAND</span>
+                    <span ref={demandRef} style={{ fontSize: '12px', fontWeight: '800' }}>0 W/s</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: '10px', color: '#64748b' }}>SUPPLY</span>
+                    <span ref={supplyRef} style={{ fontSize: '12px', color: '#fbbf24', fontWeight: '800' }}>0 W/s</span>
+                </div>
             </div>
 
-            {/* Input Handle - Left Side */}
-            <Handle
-                type="target"
-                position={Position.Left}
-                id="target"
-                style={{
-                    background: '#1c1917',
-                    border: '2px solid #ed610b',
-                    width: '10px',
-                    height: '10px',
-                    left: '-6px',
-                }}
-            />
+            {/* Upgrade Section */}
+            {Object.keys(cost).length > 0 && (
+                <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', marginBottom: '8px' }}>Upgrade Requirements:</div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        {Object.entries(cost).map(([res, amt]) => {
+                            const meta = RESOURCE_REGISTRY[res as ResourceType] || { icon: '❓' };
+                            const cur = new Decimal(cloudStorage[res] as any || 0);
+                            const isAffordable = cur.gte(amt as Decimal);
+                            return (
+                                <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '10px', color: isAffordable ? '#4ade80' : '#f87171', background: 'rgba(0,0,0,0.2)', padding: '2px 6px', borderRadius: '4px' }}>
+                                    <span>{meta.icon}</span>
+                                    <span style={{ fontWeight: 'bold' }}>{formatNumber(amt as Decimal)}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <button
+                        onClick={(e) => {
+                            if (isViewOnly) return;
+                            e.stopPropagation();
+                            useStore.getState().upgradeNode(id);
+                        }}
+                        className="nodrag"
+                        style={{
+                            width: '100%',
+                            background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                            border: 'none',
+                            color: 'white',
+                            borderRadius: '8px',
+                            padding: '8px',
+                            fontSize: '11px',
+                            fontWeight: '800',
+                            cursor: 'pointer',
+                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)'
+                        }}
+                    >
+                        UPGRADE INFRASTRUCTURE
+                    </button>
+                </div>
+            )}
 
-            {/* Output Handle - Right Side */}
-            <Handle
-                type="source"
-                position={Position.Right}
-                id="source"
-                style={{
-                    background: '#1c1917',
-                    border: '2px solid #eab308',
-                    width: '10px',
-                    height: '10px',
-                    right: '-6px',
-                }}
-            />
+            {/* Handles */}
+            <Handle type="target" position={Position.Left} id="electricity" style={{ left: '-20px', background: '#ed610b', width: '10px', height: '10px', border: '2px solid #0d1122' }} />
+            <Handle type="source" position={Position.Right} id="electricity" style={{ right: '-20px', background: '#eab308', width: '10px', height: '10px', border: '2px solid #0d1122' }} />
         </div>
     );
+};
+
+export const PowerNode = memo(PowerNodeComponent, (prev, next) => {
+    return prev.id === next.id && prev.selected === next.selected;
 });
+

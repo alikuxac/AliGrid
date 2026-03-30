@@ -1,7 +1,7 @@
-import { NodeChange, applyNodeChanges, Node } from 'reactflow';
+import { applyNodeChanges, type Node, type NodeChange } from 'reactflow';
 import { Decimal, NODE_COSTS, getUpgradeCost } from '@aligrid/engine';
 import { NodeData } from '../types';
-import { debouncedCloudSave } from '../helpers';
+import { debouncedCloudSave, safeDecimal } from '../helpers';
 import { FALLBACK_NODES } from '../../config/fallbackNodes';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8787';
@@ -12,8 +12,11 @@ export const createNodeSlice = (set: any, get: any) => ({
     nodeTemplates: [],
 
     loadNodeTemplates: async () => {
+        const API_KEY = (import.meta as any).env?.VITE_API_KEY || '';
         try {
-            const res = await fetch(`${API_BASE_URL}/api/nodes`);
+            const headers: Record<string, string> = {};
+            if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`;
+            const res = await fetch(`${API_BASE_URL}/api/nodes`, { headers });
             if (!res.ok) throw new Error("Load error");
             const data = await res.json();
             set({ nodeTemplates: data });
@@ -65,6 +68,27 @@ export const createNodeSlice = (set: any, get: any) => ({
         set((state: any) => ({
             nodes: state.nodes.map((n: any) =>
                 n.id === nodeId ? { ...n, data: { ...n.data, ...newData } } : n
+            ),
+        }));
+        debouncedCloudSave(get());
+    },
+
+    flushNode: (nodeId: string) => {
+        set((state: any) => ({
+            nodes: state.nodes.map((n: any) =>
+                n.id === nodeId ? {
+                    ...n,
+                    data: {
+                        ...n.data,
+                        inputBuffer: {},
+                        outputBuffer: {},
+                        currentAmount: 0,
+                        efficiency: 0,
+                        actualOutputPerSec: 0,
+                        actualInputPerSec: 0,
+                        status: 'idle'
+                    }
+                } : n
             ),
         }));
         debouncedCloudSave(get());
@@ -147,7 +171,7 @@ export const createNodeSlice = (set: any, get: any) => ({
         set((state: any) => ({
             nodes: state.nodes.map((n: any) => {
                 const template = templates.find((t: any) => t.id === n.type);
-                const initialRate = template?.initial_rate ? new Decimal(template.initial_rate) : new Decimal(1);
+                const initialRate = template?.initial_rate ? String(template.initial_rate) : "1";
                 return {
                     ...n,
                     data: { ...n.data, level: 0, outputRate: initialRate }

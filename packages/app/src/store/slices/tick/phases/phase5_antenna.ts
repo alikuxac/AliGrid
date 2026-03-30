@@ -1,8 +1,9 @@
-import { Node } from 'reactflow';
-import { Decimal, ResourceType, RESOURCE_REGISTRY } from '@aligrid/engine';
+import type { Node } from 'reactflow';
+import { ResourceType, RESOURCE_REGISTRY, Decimal } from '@aligrid/engine';
 import { NodeData } from '../../../types';
 import { TickContext } from '../types';
-import { addCloudStat } from '../helpers';
+import { addStat, addCloudStat, getEdgeBackpressure, safeDecimal } from '../helpers';
+import { CLOUD_BASE_CAPACITY, CLOUD_CAPACITY_GROWTH } from '../../../constants';
 
 export const updateAntennas = (ctx: TickContext) => {
     const { dtSeconds, nodeIncoming, edgeBackpressures, inEdgesByTarget, edgeFlows, nodesById, nextCloudStorage, get, nodeDeltas = {} } = ctx;
@@ -25,7 +26,7 @@ export const updateAntennas = (ctx: TickContext) => {
             for (const [rtStr, amt] of Object.entries(incoming)) {
                 const rt = rtStr as ResourceType;
                 if (RESOURCE_REGISTRY[rt]?.isUploadAvailable) {
-                    totalRequestedByRt[rt] = (totalRequestedByRt[rt] || new Decimal(0)).plus(amt as Decimal);
+                    totalRequestedByRt[rt] = (totalRequestedByRt[rt] || safeDecimal(0)).plus(amt as Decimal);
                 }
             }
         }
@@ -33,21 +34,25 @@ export const updateAntennas = (ctx: TickContext) => {
 
     // 2. Calculate Global Acceptance Factors per ResourceType
     const globalAcceptanceByRt: Partial<Record<ResourceType, Decimal>> = {};
-    const cloudLevel = get().cloudLevel || 1;
-    const globalCloudCap = new Decimal(5000).times(Math.pow(2, cloudLevel - 1));
+    const cloudLevel = ctx.cloudLevel || 1;
+    const globalCloudCap = safeDecimal(CLOUD_BASE_CAPACITY).times(Math.pow(CLOUD_CAPACITY_GROWTH, cloudLevel - 1));
+
+    const globalStorageAcceptanceByRt: Partial<Record<ResourceType, Decimal>> = {};
 
     for (const rtStr of Object.keys(totalRequestedByRt)) {
         const rt = rtStr as ResourceType;
-        const totalReq = totalRequestedByRt[rt] || new Decimal(0);
-        const curAmt = nextCloudStorageLocal[rt] || new Decimal(0);
+        const totalReq = totalRequestedByRt[rt] || safeDecimal(0);
+        const curAmt = nextCloudStorageLocal[rt] || safeDecimal(0);
         const space = Decimal.max(0, globalCloudCap.minus(curAmt));
 
+        // BACKPRESSURE acceptance is now always 1.0 (requested by user: "dây vẫn chạy bình thường")
+        globalAcceptanceByRt[rt] = safeDecimal(1);
+
         if (totalReq.gt(0)) {
-            // Formula: min(1.0, remainingSpace / totalRequested)
-            // No safety factors like +1 here to ensure 100% throughput saturation
-            globalAcceptanceByRt[rt] = Decimal.min(new Decimal(1), space.dividedBy(totalReq));
+            // How much of the intake actually fits in the cloud
+            globalStorageAcceptanceByRt[rt] = Decimal.min(safeDecimal(1), space.dividedBy(totalReq));
         } else {
-            globalAcceptanceByRt[rt] = new Decimal(1);
+            globalStorageAcceptanceByRt[rt] = safeDecimal(1);
         }
     }
 
@@ -64,15 +69,27 @@ export const updateAntennas = (ctx: TickContext) => {
             const flow = edgeFlows[edge.id];
             if (flow) {
                 for (const [rt, amt] of Object.entries(flow)) {
-                    const rateVal = dtSeconds > 0 ? (amt as Decimal).dividedBy(dtSeconds) : new Decimal(0);
+                    const rateVal = dtSeconds > 0 ? (amt as Decimal).dividedBy(dtSeconds) : safeDecimal(0);
                     const targetH = edge.targetHandle || 'input-0';
                     if (rateVal.gt(0)) {
-                        incomingRates[targetH] = { res: rt, rate: rateVal.toString() };
+                        if (!incomingRates[targetH]) (incomingRates as any)[targetH] = [];
+                        ((incomingRates as any)[targetH] as any[]).push({ res: rt, rate: rateVal.toString() });
                     }
                 }
             }
         }
-        nodeDeltas[node.id] = { ...nodeDeltas[node.id], incomingRates };
+        const firstRt = Object.keys(totalRequestedByRt)[0] as ResourceType;
+        const storageAcc = (globalStorageAcceptanceByRt[firstRt] || safeDecimal(1.0)).toNumber();
+        const incomingAmt = incoming
+            ? Object.values(incoming).reduce<Decimal>((sum, val) => sum.plus(safeDecimal(val)), safeDecimal(0))
+            : safeDecimal(0);
+
+        nodeDeltas[node.id] = {
+            ...nodeDeltas[node.id],
+            incomingRates,
+            status: (storageAcc < 0.99 && incomingAmt.gt(0)) ? 'FULL' : 'active',
+            debugInfo: `Acc:${storageAcc.toFixed(2)}`
+        };
 
         // Handle Backpressures
         for (const edge of inEdges) {
@@ -100,17 +117,23 @@ export const updateAntennas = (ctx: TickContext) => {
             for (const [rtStr, amt] of Object.entries(incoming)) {
                 const rt = rtStr as ResourceType;
                 const decAmt = amt as Decimal;
-                const acceptance = globalAcceptanceByRt[rt] || new Decimal(1);
+                const storageAcceptance = globalStorageAcceptanceByRt[rt] || safeDecimal(1);
 
-                const acceptAmt = decAmt.times(acceptance);
-                if (acceptAmt.gt(0)) {
-                    const cur = nextCloudStorageLocal[rt] || new Decimal(0);
-                    nextCloudStorageLocal[rt] = cur.plus(acceptAmt);
-                    addCloudStat(ctx, 'production', rt, acceptAmt);
+                // How much we actually save to cloud
+                const acceptAmt = decAmt.times(storageAcceptance);
 
-                    // Remove from nodeIncoming so subsequent phases don't double-process 
-                    // (although antenna is usually at the end of the chain)
-                    nodeIncoming[node.id]![rt] = Decimal.max(0, decAmt.minus(acceptAmt));
+                // Add to cloud (limited by capacity)
+                const cur = nextCloudStorageLocal[rt] || safeDecimal(0);
+                nextCloudStorageLocal[rt] = Decimal.min(globalCloudCap, Decimal.max(0, cur.plus(acceptAmt)));
+
+                // Track stats based on what we ACTUALLY stored (or requested? usually stats show throughput)
+                // Let's show throughput in stats, but storage in cloudStats
+                addCloudStat(ctx, 'production', rt, acceptAmt);
+                addStat(ctx, 'consumption', rt, decAmt); // Factory consumed the full amount
+
+                // VOID THE EXCESS: Clear 100% of incoming items from the machine intake
+                if (nodeIncoming[node.id]) {
+                    nodeIncoming[node.id][rt] = safeDecimal(0);
                 }
             }
         }

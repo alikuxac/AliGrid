@@ -3,33 +3,21 @@ import ReactFlow, { Background, Controls, ReactFlowProvider, ReactFlowInstance, 
 import 'reactflow/dist/style.css';
 import './index.css';
 
-import { ResourceGeneratorNode } from './nodes/ResourceGeneratorNode';
-import { StorageNode } from './nodes/StorageNode';
-import { ProcessorNode } from './nodes/ProcessorNode';
-import { MergerNode } from './nodes/MergerNode';
-import { SplitterNode } from './nodes/SplitterNode';
-import { AntennaNode } from './nodes/AntennaNode';
-import { CloudDownloaderNode } from './nodes/CloudDownloaderNode';
-import { PowerNode } from './nodes/PowerNode';
-import { GenericNode } from './nodes/GenericNode';
-import { GroupNode } from './nodes/GroupNode';
-import { MinerNode } from './nodes/MinerNode';
-import { GeneratorNode } from './nodes/GeneratorNode';
-import { PowerTransmitterNode } from './nodes/PowerTransmitterNode';
-import { PowerReceiverNode } from './nodes/PowerReceiverNode';
 import { useStore, NodeData } from './store';
 import { FluidEdge, PowerEdge } from './edges/CustomEdges';
 import { Sidebar } from './Sidebar';
 import { formatNumber } from './utils/formatter';
 import {
-    NODE_DATA_FACTORY,
     ResourceType,
     Decimal,
-    RESOURCE_REGISTRY,
+    NODE_DATA_FACTORY,
     NODE_COSTS
 } from '@aligrid/engine';
-import { FALLBACK_NODES } from './config/fallbackNodes';
-import { RESOURCE_STATES } from './store/constants';
+import { getAppNodeTypes } from './nodes/registry';
+import { FlowCanvas } from './components/FlowCanvas';
+import { isValidConnectionDelegate, onNodeDragStopDelegate, getAbsPosition } from './utils/flowUtils';
+import { Topbar } from './components/topbar/Topbar';
+import { SettingsModal } from './components/SettingsModal';
 
 
 
@@ -49,6 +37,8 @@ interface AppNodeTemplate {
     initial_rate?: string | number;
     power_demand?: string | number;
     power_consumption?: string | number;
+    base_power_demand?: string | number;
+    requires_power?: number | boolean;
     conversion_rate?: string | number;
     recipes?: Array<{
         inputType?: string;
@@ -60,7 +50,7 @@ interface AppNodeTemplate {
     }>;
     recipeMap?: Record<string, string>;
     radius?: number;
-    maxBuffer?: number;
+    maxBuffer?: number | string;
     style_bg?: string;
 }
 
@@ -74,8 +64,8 @@ function AppRenderer() {
     const isSidebarOpen = useStore((state) => (state as any).isSidebarOpen ?? true);
     const setIsSidebarOpen = useStore((state) => (state as any).setIsSidebarOpen);
     const setActiveTab = useStore((state) => (state as any).setActiveTab);
+    const animationsEnabled = useStore((state) => state.settings.animationsEnabled);
     const [tickRate, setTickRate] = useState(50);
-    const [tickCount, setTickCount] = useState(0);
     const workerRef = useRef<Worker | null>(null);
     const [dragStartPos, setDragStartPos] = useState<XYPosition | null>(null);
 
@@ -83,7 +73,22 @@ function AppRenderer() {
         setDragStartPos({ ...node.position });
     }, []);
 
-    const { nodes, edges, onNodesChange: storeOnNodesChange, onEdgesChange: storeOnEdgesChange, onConnect, addNode, tick, cloudStorage, cloudLevel, upgradeCloudLevel, loadState, saveState, saveStateToServer, loadStateFromServer, loadNodeTemplates, loadEdgeUpgradeCosts, isViewOnly } = useStore();
+    const storeOnNodesChange = useStore((state) => state.onNodesChange);
+    const storeOnEdgesChange = useStore((state) => state.onEdgesChange);
+    const addNode = useStore((state) => state.addNode);
+    const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
+    const itemRegistry = useStore((state) => state.itemRegistry) || {};
+    const nodeTypes = useMemo(() => getAppNodeTypes(nodeTemplates, itemRegistry), [nodeTemplates, itemRegistry]);
+    const isViewOnly = useStore((state) => state.isViewOnly);
+
+    // Store Actions
+    const loadState = useStore((state) => state.loadState);
+    const saveState = useStore((state) => state.saveState);
+    const saveStateToServer = useStore((state) => state.saveStateToServer);
+    const loadStateFromServer = useStore((state) => state.loadStateFromServer);
+    const loadNodeTemplates = useStore((state) => state.loadNodeTemplates);
+    const loadItems = useStore((state) => state.loadItems);
+    const loadEdgeUpgradeCosts = useStore((state) => state.loadEdgeUpgradeCosts);
 
     const onNodesChange = useCallback((changes: NodeChange[]) => {
         if (changes.some((c) => c.type === 'remove')) {
@@ -99,116 +104,128 @@ function AppRenderer() {
         storeOnEdgesChange(changes);
     }, [storeOnEdgesChange]);
 
-    const globalStats = useStore((state) => state.globalStats) || { production: {}, consumption: {}, cloudProduction: {}, cloudConsumption: {} };
-    const decCap = new Decimal(5000).times(Math.pow(2, (cloudLevel || 1) - 1));
+    const interactionMode = useStore((state) => state.interactionMode);
+    const setInteractionMode = useStore((state) => state.setInteractionMode);
 
-    const nodeTemplates = useStore((state) => state.nodeTemplates) || [];
-
-    const nodeTypes = useMemo(() => {
-        const base: Record<string, any> = {
-            storage: StorageNode,
-            merger: MergerNode,
-            splitter: SplitterNode,
-            antenna: AntennaNode,
-            downloader: CloudDownloaderNode,
-            powerTransmitter: PowerTransmitterNode,
-            powerReceiver: PowerReceiverNode,
-            powerPole: PowerNode,
-            accumulator: PowerNode,
-            generic: GenericNode,
-            groupArea: GroupNode,
-        };
-
-        const mergedTemplates = [...nodeTemplates];
-        FALLBACK_NODES.forEach((f) => {
-            if (!mergedTemplates.some((t) => t.id === f.id)) mergedTemplates.push(f as any);
-        });
-
-        mergedTemplates.forEach((t) => {
-            if (base[t.id]) return;
-
-            if (t.category === 'generator') {
-                const res = (t as any).resource_type || (t as any).output_type || '';
-                const matter = RESOURCE_STATES[res as ResourceType] || 'solid';
-                const powerDemand = (t as any).power_demand ? Number((t as any).power_demand) : 0;
-
-                if (powerDemand === 0) {
-                    base[t.id] = GeneratorNode;
-                } else {
-                    base[t.id] = matter === 'solid' ? MinerNode : GenericNode;
-                }
-            } else if (t.category === 'power') {
-                base[t.id] = PowerNode;
-            } else {
-                base[t.id] = GenericNode;
+    const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+        if (interactionMode === 'demolish') {
+            if (window.confirm(`Demolish ${node.data.name || node.type}?`)) {
+                storeOnNodesChange([{ type: 'remove', id: node.id }]);
             }
-        });
+        }
+    }, [interactionMode, storeOnNodesChange]);
 
-        return base as Record<string, React.ComponentType<import('reactflow').NodeProps<NodeData>>>;
-    }, [nodeTemplates]);
+    const onEdgeClick = useCallback((event: React.MouseEvent, edge: Edge) => {
+        if (interactionMode === 'demolish') {
+            if (window.confirm(`Delete this connection?`)) {
+                storeOnEdgesChange([{ type: 'remove', id: edge.id }]);
+            }
+        }
+    }, [interactionMode, storeOnEdgesChange]);
+
+    const globalStats = useStore((state) => (state as any).globalStats) || { production: {}, consumption: {}, cloudProduction: {}, cloudConsumption: {} };
+    // These will be moved to subcomponents to avoid AppRenderer re-renders
+    // const decCap = getCloudCapacity(cloudLevel);
+
 
     useEffect(() => {
         loadNodeTemplates();
+        loadItems();
         loadEdgeUpgradeCosts();
         loadState();
-    }, [loadNodeTemplates, loadEdgeUpgradeCosts, loadState]);
+    }, [loadNodeTemplates, loadItems, loadEdgeUpgradeCosts, loadState]);
 
     useEffect(() => {
-        const workerCode = `
-            let timer = null;
-            let interval = 50;
-            self.onmessage = (e) => {
-                const startTimer = () => {
-                    if (timer) clearInterval(timer);
-                    let last = performance.now();
-                    timer = setInterval(() => {
-                        const now = performance.now();
-                        const dt = (now - last) / 1000;
-                        last = now;
-                        self.postMessage(dt);
-                    }, interval);
-                };
+        // Initialize Simulation Worker
+        const simWorker = new Worker(new URL('./simulation.worker.ts', import.meta.url), { type: 'module' });
 
-                if (e.data === 'start' || e.data.type === 'start') {
-                    interval = e.data.rate || interval;
-                    startTimer();
-                } else if (e.data.type === 'rate') {
-                    interval = e.data.value;
-                    if (timer) startTimer();
-                } else if (e.data === 'stop') {
-                    clearInterval(timer);
-                }
-            };
-        `;
-        const blob = new Blob([workerCode], { type: 'application/javascript' });
-        const workerUrl = URL.createObjectURL(blob);
-        const worker = new Worker(workerUrl);
-
-        let lastSave = Date.now();
-        worker.onmessage = (e) => {
-            const dtSeconds = e.data;
-            // Prevent huge time jumps if computer goes to sleep
-            if (dtSeconds > 0 && dtSeconds < 1) {
-                tick(dtSeconds);
-                setTickCount(c => c + 1);
-
-                // Throttle save state every 2 seconds
-                if (Date.now() - lastSave > 2000) {
-                    lastSave = Date.now();
-                    saveState();
-                }
+        simWorker.onmessage = (e) => {
+            const { type, payload } = e.data;
+            if (type === 'TICK_RESULTS') {
+                useStore.getState().applyTickResults(payload);
+            } else if (type === 'ERROR') {
+                console.error('SimWorker Error:', payload);
             }
         };
 
-        workerRef.current = worker;
-        worker.postMessage({ type: 'start', rate: tickRate });
+        const startSim = async () => {
+            const state = useStore.getState();
+            const { RESOURCE_REGISTRY } = await import('@aligrid/engine');
+            try {
+                simWorker.postMessage({
+                    type: 'START',
+                    payload: {
+                        rate: tickRate,
+                        nodes: state.nodes.map(n => ({ id: n.id, type: n.type, data: n.data, parentId: n.parentId, position: n.position })),
+                        edges: state.edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle, type: e.type, data: e.data })),
+                        nodeTemplates: state.nodeTemplates,
+                        cloudStorage: state.cloudStorage,
+                        downloaderTier: state.downloaderTier || 0,
+                        edgeTiers: state.edgeTiers || {},
+                        cloudLevel: state.cloudLevel || 1,
+                        itemRegistry: state.itemRegistry || {},
+                        resourceRegistry: RESOURCE_REGISTRY,
+                        fpsLimit: state.settings.fpsLimit
+                    }
+                });
+            } catch (err) {
+                console.error("Critical: Failed to start Simulation Worker. Likely a serialization error.", err);
+            }
+        };
+
+        // Slow sync timer to ensure worker doesn't drift too far or miss main thread deletions
+        let lastAutoSave = Date.now();
+        const syncInterval = setInterval(async () => {
+            const state = useStore.getState();
+            const { RESOURCE_REGISTRY } = await import('@aligrid/engine');
+            try {
+                simWorker.postMessage({
+                    type: 'SYNC_STATE',
+                    payload: {
+                        nodes: state.nodes.map(n => ({ id: n.id, type: n.type, data: n.data, parentId: n.parentId, position: n.position })),
+                        edges: state.edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle, type: e.type, data: e.data })),
+                        nodeTemplates: state.nodeTemplates,
+                        cloudStorage: state.cloudStorage,
+                        downloaderTier: state.downloaderTier || 0,
+                        edgeTiers: state.edgeTiers || {},
+                        cloudLevel: state.cloudLevel || 1,
+                        itemRegistry: state.itemRegistry || {},
+                        resourceRegistry: RESOURCE_REGISTRY,
+                        fpsLimit: state.settings.fpsLimit
+                    }
+                });
+            } catch (err) {
+                console.warn("Worker SYNC failed:", err);
+            }
+
+            // Auto-save logic
+            const autoSaveInterval = state.settings.autoSaveInterval;
+            if (autoSaveInterval > 0 && Date.now() - lastAutoSave > autoSaveInterval * 1000) {
+                lastAutoSave = Date.now();
+                state.saveState();
+            }
+        }, 1000);
+
+        startSim();
+
+        // Immediate settings sync
+        const settingsUnsub = useStore.subscribe(
+            (state) => state.settings,
+            (settings) => {
+                simWorker.postMessage({
+                    type: 'UPDATE_SETTINGS',
+                    payload: settings
+                });
+            }
+        );
 
         return () => {
-            worker.postMessage('stop');
-            worker.terminate();
-            URL.revokeObjectURL(workerUrl);
+            clearInterval(syncInterval);
+            settingsUnsub();
+            simWorker.terminate();
         };
-    }, [tick, saveState]);
+    }, [tickRate]);
+    // Removed tick/saveState dependency as we use store.getState()
 
     useEffect(() => {
         if (workerRef.current) {
@@ -216,185 +233,12 @@ function AppRenderer() {
         }
     }, [tickRate]);
 
-    // Connection validation: 
     const isValidConnection = useCallback((connection: RFConnection) => {
-        if (!connection.targetHandle || !connection.target || !connection.source) return false;
-
-        const sourceNode = nodes.find((n) => n.id === connection.source);
-        const targetNode = nodes.find((n) => n.id === connection.target);
-        if (!sourceNode || !targetNode) return false;
-
-        const isAntenna = targetNode.type === 'antenna';
-        const isPowerNode = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver', 'hydroGenerator'].includes(targetNode.type || '');
-        const handleOccupied = edges.find(
-            (e) => e.target === connection.target && e.targetHandle === connection.targetHandle
-        );
-        if (handleOccupied && !isAntenna && !isPowerNode) return false;
-
-        // --- Wired Power Grid Rules ---
-        if (connection.targetHandle === 'electricity') {
-            const isSourcePowerHub = ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver', 'hydroGenerator'].includes(sourceNode.type || '');
-            if (!isSourcePowerHub) return false; // Machines can ONLY wire to Power Poles/Hubs!
-
-            const isGenerator = sourceNode.type && (sourceNode.type.toLowerCase().includes('generator') || sourceNode.type.toLowerCase().includes('plant') || sourceNode.type === 'lavaPump');
-            const isConsumer = targetNode.data?.powerConsumption && new Decimal(targetNode.data.powerConsumption).gt(0);
-            if (isGenerator && isConsumer) {
-                return false; // Direct Generator -> Client is FORBIDDEN! Must go through a Pole!
-            }
-        }
-        // --------------------------------
-
-        let sourceResourceType: string | undefined = undefined;
-        const isGenericHandle = ['source', 'output', 'target', 'input', 'fuel'].includes(connection.sourceHandle || '') ||
-            connection.sourceHandle?.startsWith('output-') ||
-            connection.sourceHandle?.startsWith('input-');
-
-        if (connection.sourceHandle && !isGenericHandle) {
-            sourceResourceType = connection.sourceHandle;
-        } else {
-            const potential = sourceNode.data?.lockedResourceType ||
-                sourceNode.data?.resourceType ||
-                sourceNode.data?.recipe?.outputType ||
-                sourceNode.data?.template?.output_type ||
-                sourceNode.data?.template?.resource_type;
-            if (potential && String(potential).trim() !== "") {
-                sourceResourceType = potential;
-            }
-
-            // --- Dynamic Logistics Inference ---
-            // If source is a carrier (Splitter/Merger/Storage) and has no primary type, 
-            // check its incoming connections to see what it's carrying.
-            const isLogisticsNode = ['splitter', 'merger', 'storage', 'downloader', 'antenna'].includes((sourceNode.type || '').toLowerCase());
-            if (isLogisticsNode && !sourceResourceType) {
-                const inEdge = edges.find(e => e.target === sourceNode.id);
-                if (inEdge) {
-                    // We can't easily recurse far, but we can check the color or explicit data of the input edge
-                    sourceResourceType = (inEdge.data as any)?.resourceType;
-                }
-            }
-        }
-
-        if ((targetNode.type || '').toLowerCase() === 'merger') {
-            const locked = targetNode.data?.lockedResourceType;
-            if (locked && sourceResourceType && sourceResourceType !== locked) {
-                return false;
-            }
-        }
-
-        const isDefaultHandle = !connection.targetHandle || connection.targetHandle === 'target' || connection.targetHandle === 'source' || connection.targetHandle === 'input' || connection.targetHandle === 'output' || connection.targetHandle === 'fuel' || connection.targetHandle?.startsWith('input-');
-        const targetType = (targetNode.type || '').toLowerCase();
-        const isListHandleNode = ['antenna', 'merger', 'splitter', 'powertransmitter', 'powerpole', 'accumulator'].includes(targetType);
-
-        if (!isDefaultHandle && sourceResourceType && !isListHandleNode) {
-            // Check specific handle ID for multiple-handle support
-            if (connection.targetHandle !== sourceResourceType) {
-                const recipes = targetNode.data?.recipes;
-                if (recipes && Array.isArray(recipes)) {
-                    const isValidInput = recipes.some((r) => r.inputType === sourceResourceType);
-                    if (isValidInput) return true;
-                }
-                return false;
-            }
-        } else if (targetNode.data?.recipe?.inputType && sourceResourceType) {
-            // Fallback for single handle nodes
-            const inputs = targetNode.data.recipe.inputType.split(',');
-            if (!inputs.includes(sourceResourceType)) {
-                return false;
-            }
-        }
-
-        return true;
-    }, [edges, nodes]);
-
-    const onNodeDragStop = useCallback((event: React.MouseEvent, draggedNode: Node) => {
-        const state = useStore.getState();
-        const getAbsPosition = (node: Node, nodes: Node[]) => {
-            let x = node.position.x;
-            let y = node.position.y;
-            let pId = node.parentId;
-            while (pId) {
-                const parent = nodes.find((n) => n.id === pId);
-                if (parent) {
-                    x += parent.position.x;
-                    y += parent.position.y;
-                    pId = parent.parentId;
-                } else {
-                    break;
-                }
-            }
-            return { x, y };
-        };
-
-        // --- 1. Collision Avoidance (Power Pole exclusive cell) ---
-        if (draggedNode.type !== 'groupArea') {
-            const getBox = (n: Node) => {
-                const width = n.data?.width || n.width || 220;
-                const height = n.data?.height || n.height || 100;
-                const pos = getAbsPosition(n, state.nodes);
-                return { x: pos.x, y: pos.y, w: width, h: height };
-            };
-
-            const boxA = getBox(draggedNode);
-            const otherNodes = state.nodes.filter((n) => n.id !== draggedNode.id && n.type !== 'groupArea');
-            let isOverlapping = false;
-
-            for (const other of otherNodes) {
-                const boxB = getBox(other);
-                const overlaps = (boxA.x < boxB.x + boxB.w && boxA.x + boxA.w > boxB.x && boxA.y < boxB.y + boxB.h && boxA.y + boxA.h > boxB.y);
-                if (overlaps && (draggedNode.type === 'powerPole' || other.type === 'powerPole')) {
-                    isOverlapping = true;
-                    break;
-                }
-            }
-
-            if (isOverlapping && dragStartPos) {
-                storeOnNodesChange([{ id: draggedNode.id, type: 'position', position: dragStartPos }]);
-                return; // Abort parenting checks
-            }
-        }
-
-        const groupNodes = state.nodes.filter((n: Node) => n.type === 'groupArea' && n.id !== draggedNode.id);
-
-        const isDescendant = (nodeId: string, ancestorId: string) => {
-            let current = state.nodes.find((n: Node) => n.id === nodeId);
-            while (current && current.parentId) {
-                const parent = state.nodes.find((n: Node) => n.id === current!.parentId);
-                if (!parent) break;
-                if (parent.id === ancestorId) return true;
-                current = parent;
-            }
-            return false;
-        };
-
-        const absPos = getAbsPosition(draggedNode, state.nodes);
-        const absX = absPos.x;
-        const absY = absPos.y;
-
-        let matchedGroups: { group: Node; area: number }[] = [];
-
-        for (const group of groupNodes) {
-            // Prevent circular nesting
-            if (isDescendant(group.id, draggedNode.id)) continue;
-
-            const width = group.data?.width || group.width || 300;
-            const height = group.data?.height || group.height || 200;
-            const gPos = getAbsPosition(group, state.nodes);
-
-            if (absX >= gPos.x && absX <= gPos.x + width && absY >= gPos.y && absY <= gPos.y + height) {
-                matchedGroups.push({ group, area: width * height });
-            }
-        }
-
-        // Sort by area ascending so we pick the SMALLEST containing group (the innermost subgroup)
-        matchedGroups.sort((a, b) => a.area - b.area);
-        const targetGroup = matchedGroups[0]?.group || null;
-
-        if (targetGroup) {
-            state.addNodeToGroup(draggedNode.id, targetGroup.id);
-        } else if (draggedNode.parentId) {
-            state.addNodeToGroup(draggedNode.id, null);
-        }
+        const { nodes, edges } = useStore.getState();
+        return isValidConnectionDelegate(connection, nodes, edges);
     }, []);
+
+
 
     const onDragOver = useCallback((event: React.DragEvent) => {
         event.preventDefault();
@@ -442,8 +286,9 @@ function AppRenderer() {
             if (template) {
                 defaultData.template = template as unknown as any; // Allow nested template storage
 
-                if (template.power_consumption) {
-                    defaultData.powerConsumption = String(template.power_consumption);
+                const powerVal = template.power_consumption || template.power_demand || template.base_power_demand;
+                if (powerVal !== undefined) {
+                    defaultData.powerConsumption = String(powerVal);
                 }
                 if (template.category === 'generator') {
                     defaultData.resourceType = (template.resource_type || template.output_type) as string;
@@ -493,128 +338,38 @@ function AppRenderer() {
         [reactFlowInstance, addNode]
     );
 
-    // Calculate aggregate limits
-    const globalTotal = Object.values(cloudStorage).reduce((s: Decimal, a) => s.plus(a as Decimal), new Decimal(0));
-    const activeResourcesCount = Object.values(RESOURCE_REGISTRY).filter(r => r.isUploadAvailable).length;
-    const globalCap = decCap.times(activeResourcesCount);
+    // Moved to subcomponents
+    // const globalTotal = Object.values(cloudStorage).reduce((s: Decimal, a) => s.plus(a as Decimal), new Decimal(0));
+    // const activeResourcesCount = Object.values(RESOURCE_REGISTRY).filter(r => r.isUploadAvailable).length;
+    // const globalCap = decCap.times(activeResourcesCount);
 
-    const processedNodes = React.useMemo(() => {
-        // Calculate nesting depth for proper z-index layering
-        const getDepth = (node: Node): number => {
-            let depth = 0;
-            let current: Node | undefined = node;
-            while (current?.parentId) {
-                depth++;
-                current = nodes.find((n: Node) => n.id === current!.parentId);
-            }
-            return depth;
-        };
 
-        return nodes.map((n: Node) => {
-            if (n.type === 'groupArea') {
-                const depth = getDepth(n);
-                return {
-                    ...n,
-                    dragHandle: '.group-node-header',
-                    zIndex: depth // deeper nested groups render above parents
-                };
-            }
-            // Non-group child nodes should render above their parent group
-            const depth = getDepth(n);
-            return {
-                ...n,
-                zIndex: 1000 + depth
-            };
-        });
-    }, [nodes]);
+    const onNodeDragStop = useCallback((event: React.MouseEvent, draggedNode: Node) => {
+        const state = useStore.getState();
+        onNodeDragStopDelegate(
+            draggedNode,
+            state.nodes,
+            dragStartPos,
+            storeOnNodesChange,
+            state.addNodeToGroup
+        );
+    }, [dragStartPos, storeOnNodesChange]);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100vh', background: '#0a0f1d', position: 'relative', overflow: 'hidden' }}>
+        <div
+            className={!animationsEnabled ? 'animations-disabled' : ''}
+            style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100vh', background: '#0a0f1d', position: 'relative', overflow: 'hidden' }}
+        >
+            <SettingsModal />
 
-            {/* Topbar: Cloud Storage */}
-            <div style={{
-                background: '#111827',
-                borderBottom: '1px solid #1f2937',
-                padding: '10px 20px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                zIndex: 10
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '20px' }}>☁️</span>
-                    <span style={{ fontWeight: 'bold', color: '#f8fafc', fontSize: '14px' }}>Cloud Inventory <span style={{ color: '#60a5fa', fontSize: '12px', marginLeft: '4px' }}>(Lv.{cloudLevel || 1})</span></span>
-                    <div style={{ background: '#374151', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>{formatNumber(globalTotal)} / {formatNumber(globalCap)}</span>
-                        <button
-                            onClick={() => {
-                                if (setActiveTab) setActiveTab('inventory');
-                                if (setIsSidebarOpen) setIsSidebarOpen(true);
-                            }}
-                            style={{ background: '#4b5563', border: 'none', color: 'white', padding: '1px 5px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}
-                        >
-                            Details
-                        </button>
-                    </div>
-
-                    {/* Tick Speed Controller */}
-                    <div style={{ background: '#1e293b', border: '1px solid #334155', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px' }}>
-                        <div style={{
-                            width: '6px', height: '6px', borderRadius: '50%',
-                            background: '#10b981',
-                            boxShadow: tickCount % 2 === 0 ? '0 0 6px 1px #10b981' : 'none',
-                            transition: 'all 0.05s ease'
-                        }}></div>
-                        <span style={{ color: '#94a3b8' }}>Tick:</span>
-                        <button
-                            onClick={() => {
-                                const speeds = [50, 100, 250, 500];
-                                const next = speeds[(speeds.indexOf(tickRate) + 1) % speeds.length];
-                                setTickRate(next);
-                            }}
-                            style={{ background: 'transparent', border: 'none', color: '#f8fafc', padding: '0 2px', cursor: 'pointer', fontFamily: 'monospace', fontWeight: 'bold' }}
-                        >
-                            {tickRate / 1000}s
-                        </button>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '4px', marginLeft: '6px' }}>
-                        <button disabled={isViewOnly} onClick={() => useStore.getState().resetNodes()} style={{ background: isViewOnly ? '#4b5563' : '#ef4444', border: 'none', color: 'white', padding: '3px 6px', borderRadius: '3px', cursor: isViewOnly ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold' }}>♻️ Reset Levels</button>
-                        <button disabled={isViewOnly} onClick={() => saveStateToServer()} style={{ background: isViewOnly ? '#4b5563' : '#059669', border: 'none', color: 'white', padding: '3px 6px', borderRadius: '3px', cursor: isViewOnly ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold' }}>📤 Push</button>
-                        <button disabled={isViewOnly} onClick={() => loadStateFromServer()} style={{ background: isViewOnly ? '#4b5563' : '#2563eb', border: 'none', color: 'white', padding: '3px 6px', borderRadius: '3px', cursor: isViewOnly ? 'not-allowed' : 'pointer', fontSize: '10px', fontWeight: 'bold' }}>📥 Fetch</button>
-                    </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-                    {Object.entries(cloudStorage)
-                        .map(([res, amt]) => {
-                            const count = amt as Decimal;
-                            const stats = globalStats;
-                            const prod = stats?.cloudProduction?.[res] || new Decimal(0);
-                            const cons = stats?.cloudConsumption?.[res] || new Decimal(0);
-                            const net = prod.minus(cons);
-                            return { res, count, net };
-                        })
-                        .filter(item => item.count.gt(0) || item.net.gt(0))
-                        .sort((a, b) => b.net.sub(a.net).toNumber())
-                        .slice(0, 5)
-                        .map(({ res, count, net }) => {
-                            const meta = RESOURCE_REGISTRY[res] || { icon: '❓', color: '#94a3b8', label: 'Item' };
-                            const isNetNegative = net.lessThan(0);
-
-                            return (
-                                <div key={res} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', background: '#1e293b', padding: '4px 8px', borderRadius: '4px', border: `1px solid ${isNetNegative ? '#ef444460' : '#10b98120'}` }}>
-                                    <span>{meta.icon}</span>
-                                    <span style={{ color: '#e2e8f0', fontWeight: 'bold' }}>{formatNumber(count)}</span>
-                                    <span style={{ fontSize: '10px', color: isNetNegative ? '#f87171' : net.gt(0) ? '#4ade80' : '#9ca3af', marginLeft: '2px' }}>
-                                        ({net.gt(0) ? '+' : ''}{formatNumber(net)}{(meta as any).unit || ''}/s)
-                                    </span>
-                                </div>
-                            );
-                        })
-                    }
-                </div>
-            </div>
+            {/* Topbar Modularized */}
+            <Topbar
+                tickRate={tickRate}
+                setTickRate={setTickRate}
+                saveStateToServer={saveStateToServer}
+                loadStateFromServer={loadStateFromServer}
+                isViewOnly={isViewOnly}
+            />
 
             {/* Cloud Details Modal Popover */}
 
@@ -637,36 +392,79 @@ function AppRenderer() {
                     <Sidebar />
                 </div>
 
-                <div ref={reactFlowWrapper} style={{ flexGrow: 1, height: '100%', minWidth: 0, position: 'relative', overflow: 'hidden' }}>
-                    <ReactFlow
-                        nodes={processedNodes}
-                        edges={edges}
-                        onNodesChange={isViewOnly ? undefined : onNodesChange}
-                        onEdgesChange={isViewOnly ? undefined : onEdgesChange}
-                        onConnect={isViewOnly ? undefined : onConnect}
-                        isValidConnection={isValidConnection}
+                <div ref={reactFlowWrapper} className={interactionMode === 'demolish' ? 'mode-demolish' : ''} style={{ flexGrow: 1, height: '100%', minWidth: 0, position: 'relative', overflow: 'hidden' }}>
+                    <FlowCanvas
                         onInit={setReactFlowInstance}
-                        onDrop={isViewOnly ? undefined : onDrop}
-                        onDragOver={isViewOnly ? undefined : onDragOver}
-                        onNodeDragStop={isViewOnly ? undefined : onNodeDragStop}
-                        onNodeDragStart={isViewOnly ? undefined : onNodeDragStart}
-                        nodeTypes={nodeTypes}
-                        nodesDraggable={!isViewOnly}
-                        nodesConnectable={!isViewOnly}
-                        edgesFocusable={!isViewOnly}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onNodeClick={onNodeClick}
+                        onEdgeClick={onEdgeClick}
+                        onSelectionChange={(params) => {
+                            // Selection handled by store via onNodesChange if needed
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        onDragOver={onDragOver}
+                        onDrop={onDrop}
+                        onNodeDragStop={onNodeDragStop}
+                        isValidConnection={isValidConnection}
                         edgeTypes={edgeTypes}
-                        fitView
-                        minZoom={0.1}
-                        maxZoom={4}
-                        onlyRenderVisibleElements={true}
-                        panOnScroll={true}
-                        selectionOnDrag={false}
-                        style={{ background: '#0a0f1d' }}
-                    >
-                        <Background gap={16} size={1} color="#334155" />
-                        <Controls />
-                        <MiniMap style={{ background: '#111827', border: '1px solid #19273a' }} nodeColor="#4b5563" maskColor="rgba(0,0,0,0.4)" />
-                    </ReactFlow>
+                    />
+
+                    {/* Interactions Toolbar */}
+                    <div style={{
+                        position: 'absolute',
+                        bottom: '24px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        zIndex: 100,
+                        background: '#111827E0',
+                        backdropFilter: 'blur(8px)',
+                        border: '1px solid #1f2937',
+                        borderRadius: '12px',
+                        padding: '6px',
+                        display: 'flex',
+                        gap: '4px',
+                        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                    }}>
+                        <button
+                            onClick={() => setInteractionMode('select')}
+                            title="Select / Drag / Build"
+                            style={{
+                                background: interactionMode === 'select' ? '#3b82f6' : 'transparent',
+                                color: interactionMode === 'select' ? 'white' : '#94a3b8',
+                                border: 'none',
+                                borderRadius: '8px',
+                                padding: '8px 16px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                transition: 'all 0.2s ease',
+                                fontWeight: interactionMode === 'select' ? '600' : '400',
+                            }}
+                        >
+                            <span>🖱️</span> Select
+                        </button>
+                        <button
+                            onClick={() => setInteractionMode('demolish')}
+                            title="Demolish Mode (One-click delete)"
+                            style={{
+                                background: interactionMode === 'demolish' ? '#ef4444' : 'transparent',
+                                color: interactionMode === 'demolish' ? 'white' : '#9ca3af',
+                                border: 'none',
+                                borderRadius: '8px',
+                                padding: '8px 16px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                transition: 'all 0.2s ease',
+                                fontWeight: interactionMode === 'demolish' ? '600' : '400',
+                            }}
+                        >
+                            <span>💣</span> Demolish
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

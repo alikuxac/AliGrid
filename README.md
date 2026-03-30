@@ -1,5 +1,8 @@
 # 🌌 AliGrid - Simulation & Idle Factory Game
 
+> [!CAUTION]
+> **Experimental Version (v0.1.0)**: This is an early-stage experimental build and not yet a finished product. Many features are under active development and may change significantly in future updates.
+
 A simulation and idle crafting game focused on managing an interconnected network of infinite resources. Built with a node-based architecture utilizing React Flow and a custom-designed game logic engine.
 
 ---

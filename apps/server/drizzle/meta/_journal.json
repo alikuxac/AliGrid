@@ -15,6 +15,34 @@
       "when": 1774445422041,
       "tag": "0001_blue_squadron_supreme",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1774549590961,
+      "tag": "0002_classy_titania",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1774550475617,
+      "tag": "0003_moaning_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1774676120212,
+      "tag": "0004_tired_captain_midlands",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1774751223819,
+      "tag": "0005_luxuriant_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

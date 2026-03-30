@@ -24,6 +24,23 @@ export const NodeTemplateSchema = z.object({
     maxBuffer: z.union([z.string(), z.number()]).optional().nullable(),
     upgrade_cost_config: z.string().optional().nullable(),
     upgrade_benefit_config: z.string().optional().nullable(),
+    requires_power: z.number().optional().nullable(),
+    base_power_demand: z.string().optional().nullable(),
+});
+
+export const RecipeIngredientSchema = z.object({
+    recipeId: z.string(),
+    itemId: z.string(),
+    amount: z.number(),
+    usageType: z.enum(['MATERIAL', 'FUEL']).default('MATERIAL'),
+});
+
+export const RecipeSchema = z.object({
+    id: z.string(),
+    name: z.string(),
+    durationSeconds: z.number(),
+    powerDemand: z.number().optional(),
+    ingredients: z.array(RecipeIngredientSchema).optional(),
 });
 
 export type NodeTemplate = z.infer<typeof NodeTemplateSchema>;

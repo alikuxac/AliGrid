@@ -4,10 +4,11 @@ compatibility_date = "2024-11-20"
 
 [[kv_namespaces]]
 binding = "ALIGRID_KV"
-id = "ALIGRID_KV_ID"
-preview_id = "ALIGRID_KV_ID_PREVIEW"
+id = "fac19061fc1d44adb33941a8cb0a12ca"
+preview_id = "fac19061fc1d44adb33941a8cb0a12ca"
 
 [[d1_databases]]
 binding = "ALIGRID_DB"
 database_name = "aligrid-db"
-database_id = "ALIGRID_DB_ID"
+database_id = "e166fae8-99a4-45c4-a13f-0f0e0f91f686"
+migrations_dir = "drizzle"

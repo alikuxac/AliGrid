@@ -30,7 +30,7 @@ export const createStorageNode = (level: number = 1): StorageNodeData => {
 };
 
 export const getStorageCapacity = (level: number): Decimal => {
-    return STORAGE_CAPACITIES[level] || STORAGE_CAPACITIES[1];
+    return new Decimal(200).times(Math.pow(5, level - 1));
 };
 
 export const updateStorageNodeSingle = (

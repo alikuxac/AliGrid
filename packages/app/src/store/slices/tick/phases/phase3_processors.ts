@@ -1,15 +1,14 @@
-import { Node } from 'reactflow';
+import type { Node } from 'reactflow';
 import { Decimal, ResourceType } from '@aligrid/engine';
 import { NodeData, RecipeConfig } from '../../../types';
 import { NodeTemplate } from '@aligrid/schema';
 import { TickContext } from '../types';
-import { addStat, getEdgeBackpressure, pushToEdge, pushToMultipleEdges, smoothValue } from '../helpers';
+import { addStat, getEdgeBackpressure, pushToEdge, pushToMultipleEdges, smoothValue, safeDecimal, nodeDelta } from '../helpers';
 import { isProcessor } from '../../../helpers';
 import { FALLBACK_NODES } from '../../../../config/fallbackNodes';
-import { RESOURCE_STATES } from '../../../constants';
 
 export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
-    const { nextNodes, inEdgesByTarget, outEdgesBySource, dtSeconds, nodeIncoming, edgeBackpressures, nodesById, state, nodeDeltas = {} } = ctx;
+    const { nextNodes, inEdgesByTarget, outEdgesBySource, dtSeconds, nodeIncoming, edgeBackpressures, nodesById, nodeTemplates, nodeDeltas = {} } = ctx;
     ctx.nodeDeltas = nodeDeltas;
 
     const assemblersNodes: Node<NodeData>[] = [];
@@ -19,7 +18,7 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         const category = node.data?.template?.category;
         if (node.type === 'cobbleGen' || category === 'assembler') {
             assemblersNodes.push(node);
-        } else if (isProcessor(node) && node.type !== 'cobbleGen') {
+        } else if ((isProcessor(node) || ['sawmill', 'composter', 'greenhouse', 'bioplasticMixer'].includes(node.type || '')) && node.type !== 'cobbleGen') {
             processorsNodes.push(node);
         }
     });
@@ -32,12 +31,12 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
         const Level = node.data.level || 0;
         const multiplierVal = Math.pow(2, Level);
-        const maxBuf = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(5000).times(multiplierVal);
+        const maxBuf = node.data.maxBuffer ? safeDecimal(node.data.maxBuffer) : safeDecimal(5000).times(multiplierVal);
 
         for (const [rt, amt] of Object.entries(incoming)) {
-            const decimalAmt = amt as Decimal;
-            if (decimalAmt && decimalAmt.gt(0)) {
-                const curAmt = bufferObj[rt] ? new Decimal(bufferObj[rt] as any) : new Decimal(0);
+            const decimalAmt = safeDecimal(amt);
+            if (decimalAmt.gt(0)) {
+                const curAmt = bufferObj[rt] ? safeDecimal(bufferObj[rt] as any) : safeDecimal(0);
                 const leftover = Decimal.max(0, maxBuf.minus(curAmt));
                 const actualTaken = Decimal.min(decimalAmt, leftover);
 
@@ -52,9 +51,9 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         if (node.data.isOff) {
             const inEdges = inEdgesByTarget[node.id] || [];
             for (const edge of inEdges) {
-                edgeBackpressures[edge.id] = new Decimal(0);
+                edgeBackpressures[edge.id] = safeDecimal(0);
             }
-            node.data = { ...node.data, actualInputPerSec: new Decimal(0), actualOutputPerSec: new Decimal(0), efficiency: new Decimal(0), inputEfficiency: new Decimal(0) };
+            node.data = { ...node.data, actualInputPerSec: safeDecimal(0), actualOutputPerSec: safeDecimal(0), efficiency: safeDecimal(0), inputEfficiency: safeDecimal(0) };
             continue;
         }
 
@@ -64,7 +63,19 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
             multiplier *= boost;
         }
 
-        const recipes = node.data.recipes || (node.data.recipe ? [node.data.recipe] : []);
+        let recipes = node.data.recipes || (node.data.recipe ? [node.data.recipe] : []);
+        const templatesArr = Array.isArray(nodeTemplates) ? nodeTemplates : [];
+        const fallbackArr = Array.isArray(FALLBACK_NODES) ? FALLBACK_NODES : [];
+        const template = templatesArr.find((t: NodeTemplate) => t.id === node.type) || fallbackArr.find((t: any) => t.id === node.type);
+        const t = (node.data?.template || template) as any;
+        if (recipes.length === 0 && (t?.input_type || t?.output_type || t?.inputType || t?.outputType)) {
+            recipes = [{
+                inputType: t.inputType || t.input_type || t.resource_type || '',
+                outputType: t.outputType || t.output_type || '',
+                conversionRate: t.conversionRate || t.conversion_rate || 1
+            }];
+        }
+
         let selectedRecipe = recipes[node.data.activeRecipeIndex || 0] || recipes[0];
 
         const inEdges = inEdgesByTarget[node.id] || [];
@@ -75,114 +86,168 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
             if (srcNode) {
                 const outType = srcNode.data?.recipe?.outputType || srcNode.data?.template?.output_type || srcNode.data?.resourceType;
                 if (outType) {
-                    outType.split(',').forEach((o: any) => connectedInputs.add(o.trim()));
+                    outType.split(',').forEach((o: string) => connectedInputs.add(o.trim()));
                 }
             }
         });
 
         const matchedRecipe = recipes.find((r: any) => {
-            const tIn = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: any) => t.trim()) : [];
+            const tIn = typeof (r.inputType || r.input_type) === 'string' ? (r.inputType || r.input_type).split(',').map((it: string) => it.trim()) : [];
             if (tIn.length === 0) return false;
-            return tIn.every((t: any) => connectedInputs.has(t));
+            return tIn.every((it: string) => connectedInputs.has(it));
         });
 
         if (matchedRecipe) {
             selectedRecipe = matchedRecipe;
         }
 
+        // ═══ Power Logic for Assemblers ═══
+        let wirelessPowerEff = node.data.wirelessEfficiency !== undefined ? safeDecimal(node.data.wirelessEfficiency) : safeDecimal(1);
+        const powerGrids = ctx.powerGrids || [];
+        const powerGrid = powerGrids.find(g => g.consumers?.some(c => c.id === node.id));
+        let powerEfficiency = powerGrid ? powerGrid.efficiency : wirelessPowerEff;
+
+        // Wired Electricity Buffer Check
+        const powerConsVal = safeDecimal(node.data.powerConsumption || 0);
+        if (powerConsVal.gt(0)) {
+            const reqElecTick = powerConsVal.times(dtSeconds).times(boost);
+            const bufferElec = bufferObj['electricity'] ? safeDecimal(bufferObj['electricity']) : safeDecimal(0);
+            if (bufferElec.gt(0) && reqElecTick.gt(0)) {
+                const bufferPowerEff = Decimal.min(1.0, bufferElec.dividedBy(reqElecTick));
+                powerEfficiency = Decimal.max(powerEfficiency, bufferPowerEff);
+            } else if (!powerGrid && wirelessPowerEff.lte(0)) {
+                powerEfficiency = safeDecimal(0);
+            }
+        }
+
+        const requiresPower = node.data.requiresPower !== undefined ? node.data.requiresPower : (t?.requires_power !== undefined ? !!t.requires_power : true);
+        if (powerConsVal.lte(0) || !requiresPower) {
+            powerEfficiency = safeDecimal(1);
+        }
+
         if (!selectedRecipe) continue;
 
-        const outTypes = typeof selectedRecipe.outputType === 'string'
-            ? selectedRecipe.outputType.split(',').map((o: any) => o.trim())
-            : [selectedRecipe.outputType];
-        const inTypes = typeof selectedRecipe.inputType === 'string' ? selectedRecipe.inputType.split(',').map((t) => t.trim()) : [];
+        const outTypes = typeof (selectedRecipe.outputType || (selectedRecipe as any).output_type) === 'string'
+            ? (selectedRecipe.outputType || (selectedRecipe as any).output_type).split(',').map((o: string) => o.trim())
+            : [selectedRecipe.outputType || (selectedRecipe as any).output_type];
+        const inTypes = typeof (selectedRecipe.inputType || (selectedRecipe as any).input_type) === 'string'
+            ? (selectedRecipe.inputType || (selectedRecipe as any).input_type).split(',').map((it: string) => it.trim()) : [];
 
-        const convRate = new Decimal(selectedRecipe.conversionRate);
-        const outputPerCraft = (convRate.lt(1) ? new Decimal(1) : convRate).times(multiplier);
+        const convRate = safeDecimal(selectedRecipe.conversionRate || (selectedRecipe as any).conversion_rate);
+        const outputPerCraft = (convRate.lt(1) ? safeDecimal(1) : convRate).times(multiplier);
 
         const inRates = typeof (selectedRecipe as any).inputRates === 'string'
-            ? (selectedRecipe as any).inputRates.split(',').map((r: string) => new Decimal(r.trim()))
-            : inTypes.map(() => convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1));
+            ? (selectedRecipe as any).inputRates.split(',').map((r: string) => safeDecimal(r.trim()))
+            : inTypes.map(() => convRate.lt(1) ? safeDecimal(1).dividedBy(convRate).round() : safeDecimal(1));
 
         const outBuffer = node.data.outputBuffer || {};
-        const maxOutBuffer = node.data.maxBuffer || 5000;
 
-        let crafts = new Decimal(Infinity);
-
+        // 1. Calculate how many crafts can actually fit in the output buffers (Buffer-First)
+        let maxByStorage = safeDecimal(Infinity);
         for (let idx = 0; idx < outTypes.length; idx++) {
             const outT = outTypes[idx];
-            const currentAmt = outBuffer[outT] ? new Decimal(outBuffer[outT] as any) : new Decimal(0);
+            const currentAmt = outBuffer[outT] ? safeDecimal(outBuffer[outT] as any) : safeDecimal(0);
             const itemGainPerCraft = idx === 0 ? outputPerCraft : outputPerCraft.times(0.3);
+            const leftoverSpace = Decimal.max(0, maxBuf.minus(currentAmt));
 
-            const leftoverSpace = Decimal.max(0, new Decimal(maxOutBuffer).minus(currentAmt));
-            const maxByOutput = itemGainPerCraft.gt(0) ? leftoverSpace.dividedBy(itemGainPerCraft).floor() : new Decimal(Infinity);
-            if (maxByOutput.lt(crafts)) crafts = maxByOutput;
+            // For electricity, we only ignore backpressure if the grid REALLY needs power (efficiency < 1)
+            const prodEff = node.data?.productionEfficiency ? safeDecimal(node.data.productionEfficiency) : safeDecimal(1);
+            if (outT === 'electricity' && prodEff.lt(0.99)) {
+                // Grid needs more power, ignore local buffer limits
+                continue;
+            }
+
+            const canFit = itemGainPerCraft.gt(0) ? leftoverSpace.dividedBy(itemGainPerCraft).floor() : safeDecimal(Infinity);
+            if (canFit.lt(maxByStorage)) maxByStorage = canFit;
         }
 
         const reqAmountsMap: Record<string, Decimal> = {};
+        let craftsByInputs = safeDecimal(Infinity);
 
         if (inTypes.length > 0) {
-            const hasSolidInput = inTypes.some(t => (RESOURCE_STATES[t] || 'solid') === 'solid');
+            const hasSolidInput = inTypes.some((it: string) => {
+                const item = ctx.itemRegistry?.[it];
+                return (item?.type || 'solid').toLowerCase() === 'solid';
+            });
 
             for (let i = 0; i < inTypes.length; i++) {
-                const t = inTypes[i];
-                const rate = inRates[i] || new Decimal(1);
+                const rt = inTypes[i];
+                if (!rt || rt === 'electricity') continue;
+                const rate = inRates[i] || safeDecimal(1);
+                // Requirement for ONE full craft cycle
                 const reqAmt = rate.times(multiplier);
-                reqAmountsMap[t] = reqAmt;
+                reqAmountsMap[rt || ''] = reqAmt;
 
-                const amt = bufferObj[t] ? new Decimal(bufferObj[t] as any) : new Decimal(0);
-                const c = amt.dividedBy(reqAmt).floor();
+                const amtAvailable = bufferObj[rt || ''] ? safeDecimal(bufferObj[rt || ''] as any) : safeDecimal(0);
+                const c = amtAvailable.dividedBy(reqAmt).floor();
 
-                const matter = RESOURCE_STATES[t] || 'solid';
+                const item = ctx.itemRegistry?.[rt || ''];
+                const matter = (item?.type || 'solid').toLowerCase();
                 if (matter === 'solid' || !hasSolidInput) {
-                    if (c.lt(crafts)) crafts = c;
+                    if (c.lt(craftsByInputs)) craftsByInputs = c;
                 }
             }
         } else {
-            if (crafts.eq(Infinity)) crafts = new Decimal(1);
+            craftsByInputs = safeDecimal(1);
         }
 
-        let maxCraftsCount = Decimal.min(new Decimal(100), crafts);
-        const realCraftsCount = maxCraftsCount;
+        // 2. Real crafts count (limited by input buffer, speed, power, and output storage)
+        const productionEfficiency = node.data?.productionEfficiency ? safeDecimal(node.data.productionEfficiency) : safeDecimal(1);
+        const maxCraftsBatch = Decimal.min(safeDecimal(100), craftsByInputs);
+        const actualCraftsCount = Decimal.min(maxCraftsBatch, maxByStorage).times(Decimal.min(powerEfficiency, productionEfficiency));
+        const totalProducedMain = outputPerCraft.times(actualCraftsCount);
 
-        let realConsumed = new Decimal(0);
-        const gainMax = outputPerCraft.times(realCraftsCount);
-
+        // 3. Consume inputs
+        let realConsumedTotal = safeDecimal(0);
         for (let i = 0; i < inTypes.length; i++) {
-            const t = inTypes[i];
-            const req = reqAmountsMap[t] || new Decimal(0);
-            const consumed = req.times(realCraftsCount);
-
-            const currentAmt = bufferObj[t] ? new Decimal(bufferObj[t] as any) : new Decimal(0);
-            bufferObj[t] = Decimal.max(0, currentAmt.minus(consumed)).toString();
-
-            addStat(ctx, 'consumption', t as any, consumed);
-            realConsumed = realConsumed.plus(consumed);
+            const rt = inTypes[i];
+            const req = reqAmountsMap[rt || ''] || safeDecimal(0);
+            const consumed = req.times(actualCraftsCount);
+            const currentAmt = bufferObj[rt || ''] ? safeDecimal(bufferObj[rt || ''] as any) : safeDecimal(0);
+            bufferObj[rt || ''] = Decimal.max(0, currentAmt.minus(consumed)).toString();
+            if (rt) {
+                addStat(ctx, 'consumption', rt as ResourceType, consumed);
+                realConsumedTotal = realConsumedTotal.plus(consumed);
+            }
         }
 
+        // Consume electricity from buffer
+        if (powerConsVal.gt(0)) {
+            const powerTick = powerConsVal.times(dtSeconds).times(boost).times(actualCraftsCount.gt(0) ? safeDecimal(1) : powerEfficiency);
+            const curElec = bufferObj['electricity'] ? safeDecimal(bufferObj['electricity']) : safeDecimal(0);
+            const consumedElec = Decimal.min(curElec, powerTick);
+            bufferObj['electricity'] = curElec.minus(consumedElec).toString();
+            addStat(ctx, 'consumption', 'electricity', consumedElec);
+        }
+
+        // 4. Update output buffers with produced gain
+        outTypes.forEach((outType: string, idx: number) => {
+            const gain = idx === 0 ? totalProducedMain : totalProducedMain.times(0.3);
+            const cur = outBuffer[outType] ? safeDecimal(outBuffer[outType] as any) : safeDecimal(0);
+            outBuffer[outType] = cur.plus(gain).toString();
+        });
+
+        // 5. Perform logistics (Push from updated buffers)
         const targetEdges = outEdgesBySource[node.id] || [];
         const edgeCount = targetEdges.length;
-
-        let pushedTotalMain = new Decimal(0);
+        let pushedTotalMain = safeDecimal(0);
 
         outTypes.forEach((outType: string, idx: number) => {
-            const itemGain = idx === 0 ? gainMax : gainMax.times(0.3);
-            const bucket = outBuffer[outType] ? new Decimal(outBuffer[outType] as any) : new Decimal(0);
-            const totalGain = bucket.plus(itemGain);
+            const currentBucket = outBuffer[outType] ? safeDecimal(outBuffer[outType] as any) : safeDecimal(0);
+            let pushedThisType = safeDecimal(0);
 
-            let pushedThisType = new Decimal(0);
-            if (edgeCount > 0 && totalGain.gt(0)) {
-                pushedThisType = pushToMultipleEdges(ctx, targetEdges, outType, totalGain);
-                const remainder = totalGain.minus(pushedThisType);
+            if (edgeCount > 0 && currentBucket.gt(0)) {
+                pushedThisType = pushToMultipleEdges(ctx, targetEdges, outType, currentBucket);
+                const remainder = currentBucket.minus(pushedThisType);
                 outBuffer[outType] = remainder.toString();
-            } else {
-                outBuffer[outType] = totalGain.toString();
             }
 
             if (idx === 0) pushedTotalMain = pushedThisType;
-            if (outType === 'electricity' && idx === 0) pushedTotalMain = itemGain;
 
-            addStat(ctx, 'production', outType, pushedThisType);
+            // Production Stat and UI Output reflect the rate of CREATION or EXCRETION
+            const creationGain = idx === 0 ? totalProducedMain : totalProducedMain.times(0.3);
+            const displayRate = Decimal.max(creationGain, pushedThisType);
+            addStat(ctx, 'production', outType as ResourceType, displayRate);
         });
 
         node.data.outputBuffer = outBuffer;
@@ -191,31 +256,37 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         for (const edge of (inEdgesByTarget[node.id] || [])) {
             const rtForEdge = edge.data?.resourceType || '';
             const isFuelEdge = edge.targetHandle === 'fuel';
-            const resourceIsFuel = FUEL_RESOURCES.includes(rtForEdge);
+            const isElecEdge = edge.targetHandle === 'electricity' || rtForEdge === 'electricity';
+            const isMatchingHandle = edge.targetHandle === rtForEdge;
+            const resourceIsFuel = FUEL_RESOURCES.includes(rtForEdge) && !inTypes.includes(rtForEdge);
 
-            const currentAmt = bufferObj[rtForEdge] ? new Decimal(bufferObj[rtForEdge] as any) : new Decimal(0);
-            const bp = currentAmt.lt(maxBuf) ? new Decimal(1) : new Decimal(0);
+            const currentAmt = bufferObj[rtForEdge] ? safeDecimal(bufferObj[rtForEdge] as any) : safeDecimal(0);
 
-            if ((isFuelEdge && resourceIsFuel) || (!isFuelEdge && !resourceIsFuel) || !edge.targetHandle) {
+            // Buffer safety: Ensure capacity is at least 10x the required amount per craft
+            const reqForResource = reqAmountsMap[rtForEdge] || (rtForEdge === 'electricity' ? powerConsVal.times(dtSeconds).times(boost) : safeDecimal(1));
+            const scaledMaxBuf = Decimal.max(maxBuf, reqForResource.times(10));
+
+            const bp = currentAmt.lt(scaledMaxBuf) ? safeDecimal(1) : safeDecimal(0);
+
+            if (isMatchingHandle || isElecEdge || (isFuelEdge && resourceIsFuel) || (!isFuelEdge && !isElecEdge && !resourceIsFuel) || !edge.targetHandle) {
                 edgeBackpressures[edge.id] = bp;
             }
         }
 
-        const inputPerSec = dtSeconds > 0 ? realConsumed.dividedBy(dtSeconds) : new Decimal(0);
-        const outputPerSec = dtSeconds > 0 ? pushedTotalMain.dividedBy(dtSeconds) : new Decimal(0);
+        const inputPerSec = dtSeconds > 0 ? realConsumedTotal.dividedBy(dtSeconds) : safeDecimal(0);
+        const outputPerSec = dtSeconds > 0 ? (totalProducedMain.gt(pushedTotalMain) ? totalProducedMain : pushedTotalMain).dividedBy(dtSeconds) : safeDecimal(0);
         const smoothedInput = smoothValue(node.data.actualInputPerSec, inputPerSec, dtSeconds, 1.0);
         const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 1.0);
-        const instantEff = maxCraftsCount.gt(0) ? new Decimal(1) : new Decimal(0);
+        const instantEff = actualCraftsCount.gt(0) || (powerConsVal.gt(0) && powerEfficiency.gt(0) && craftsByInputs.gt(0)) ? powerEfficiency : safeDecimal(0);
         const smoothedEff = smoothValue(node.data.efficiency, instantEff, dtSeconds, 1.0);
 
-        nodeDeltas[node.id] = {
-            ...nodeDeltas[node.id],
+        nodeDelta(ctx, node.id, {
             actualInputPerSec: smoothedInput,
             actualOutputPerSec: smoothedOutput,
             efficiency: smoothedEff,
-            inputEfficiency: new Decimal(1),
+            inputEfficiency: powerEfficiency,
             inputBuffer: bufferObj,
-        };
+        });
     }
 
     // ═══ Phase 3: Processors ═══
@@ -230,15 +301,15 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         if (boost > 1) {
             multiplier *= boost;
         }
-        const maxBuf = node.data.maxBuffer ? new Decimal(node.data.maxBuffer) : new Decimal(5000).times(multiplier);
+        const maxBuf = node.data.maxBuffer ? safeDecimal(node.data.maxBuffer) : safeDecimal(5000).times(multiplier);
 
         let hasNewData = false;
         for (const [rt, amt] of Object.entries(incoming)) {
-            const decimalAmt = amt as Decimal;
-            if (decimalAmt && decimalAmt.gt(0)) {
-                const curAmt = inputBufferObj[rt] ? new Decimal(inputBufferObj[rt] as any) : new Decimal(0);
+            const decimalAmt = safeDecimal(amt);
+            if (decimalAmt.gt(0)) {
+                const curAmt = inputBufferObj[rt] ? safeDecimal(inputBufferObj[rt] as any) : safeDecimal(0);
 
-                // Respect per-resource capacity (usually consumption_per_tick * some buffer multiplier, but we use maxBuf here)
+                // Respect per-resource capacity
                 const leftover = Decimal.max(0, maxBuf.minus(curAmt));
                 const actualTaken = Decimal.min(decimalAmt, leftover);
 
@@ -256,26 +327,66 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
         if (node.data.isOff) {
             const inEdges = inEdgesByTarget[node.id] || [];
             for (const edge of inEdges) {
-                edgeBackpressures[edge.id] = new Decimal(0);
+                edgeBackpressures[edge.id] = safeDecimal(0);
             }
-            node.data = { ...node.data, actualInputPerSec: new Decimal(0), actualOutputPerSec: new Decimal(0), efficiency: new Decimal(0) };
+            nodeDelta(ctx, node.id, { actualInputPerSec: safeDecimal(0), actualOutputPerSec: safeDecimal(0), efficiency: safeDecimal(0) });
             continue;
         }
 
+        const templatesArr = Array.isArray(nodeTemplates) ? nodeTemplates : [];
+        const fallbackArr = Array.isArray(FALLBACK_NODES) ? FALLBACK_NODES : [];
+        const template = templatesArr.find((t: NodeTemplate) => t.id === node.type) || fallbackArr.find((t: any) => t.id === node.type);
+        const t = (node.data?.template || template) as any;
 
-        let powerEfficiency = node.data.wirelessEfficiency !== undefined ? new Decimal(node.data.wirelessEfficiency) : new Decimal(1);
-        const isElectricityProducer = node.data?.recipe?.outputType === 'electricity' || node.type === 'hydroGenerator' || node.type === 'accumulator' || (node.data?.recipes && Array.isArray(node.data.recipes) && (node.data.recipes as RecipeConfig[]).some(r => r.outputType === 'electricity'));
-        if (isElectricityProducer && node.data.productionEfficiency !== undefined) {
-            powerEfficiency = new Decimal(node.data.productionEfficiency);
+        let wirelessPowerEff = node.data.wirelessEfficiency !== undefined ? safeDecimal(node.data.wirelessEfficiency) : safeDecimal(1);
+        const powerGrids = ctx.powerGrids || [];
+        const powerGrid = powerGrids.find(g =>
+            g.consumers?.some(c => c.id === node.id) ||
+            g.producers?.some(p => p.id === node.id) ||
+            g.poles?.some(p => p.id === node.id)
+        );
+
+        let powerEfficiency = wirelessPowerEff;
+        if (powerGrid) {
+            powerEfficiency = powerGrid.efficiency;
         }
 
-        let powerReqAmt = new Decimal(0);
+        // Buffer-based Electricity (Wired handle)
+        const powerConsVal = safeDecimal(node.data.powerConsumption || 0);
+        if (powerConsVal.gt(0)) {
+            const reqAmt = powerConsVal.times(dtSeconds).times(boost);
+            const bufferElec = inputBufferObj['electricity'] ? safeDecimal(inputBufferObj['electricity']) : safeDecimal(0);
+            if (bufferElec.gt(0)) {
+                const bufferPowerEff = Decimal.min(1.0, bufferElec.dividedBy(reqAmt));
+                powerEfficiency = Decimal.max(powerEfficiency, bufferPowerEff);
+            }
+        }
+
+        const requiresPower = node.data.requiresPower !== undefined ? node.data.requiresPower : (t?.requires_power !== undefined ? !!t.requires_power : true);
+
+        // Robust power check: if template says NO power, or demand is 0, efficiency is 100%
+        if (!requiresPower || powerConsVal.lte(0)) {
+            powerEfficiency = safeDecimal(1);
+        }
+
+        const isElectricityProducer = node.data?.recipe?.outputType === 'electricity' ||
+            node.type === 'hydroGenerator' ||
+            node.type === 'accumulator' ||
+            (node.data?.recipes && Array.isArray(node.data.recipes) && (node.data.recipes as RecipeConfig[]).some(r => r.outputType === 'electricity'));
+
+        let powerReqAmt = safeDecimal(0);
         if (node.data.powerConsumption) {
-            powerReqAmt = new Decimal(node.data.powerConsumption).times(dtSeconds);
+            powerReqAmt = safeDecimal(node.data.powerConsumption).times(dtSeconds);
         }
 
-        const template = state.nodeTemplates.find((t: NodeTemplate) => t.id === node.type) || FALLBACK_NODES.find((t: any) => t.id === node.type);
-        const recipes = node.data.recipes || (node.data.recipe ? [node.data.recipe] : []) || (template as any)?.recipes || [];
+        let recipes = node.data.recipes || (node.data.recipe ? [node.data.recipe] : []) || (template as any)?.recipes || [];
+        if (recipes.length === 0 && (t?.input_type || t?.output_type || t?.inputType || t?.outputType)) {
+            recipes = [{
+                inputType: t.inputType || t.input_type || t.resource_type || '',
+                outputType: t.outputType || t.output_type || '',
+                conversionRate: t.conversionRate || t.conversion_rate || 1
+            }];
+        }
         if (recipes.length === 0) continue;
 
         const isMultiInputNode = recipes.length > 1;
@@ -283,173 +394,192 @@ export const updateProcessorsAndAssemblers = (ctx: TickContext) => {
 
         if (isMultiInputNode && inEdgesCurrent.length === 0) {
             if (nodeIncoming[node.id]) {
-                for (const t of Object.keys(nodeIncoming[node.id])) {
-                    nodeIncoming[node.id][t as ResourceType] = new Decimal(0);
+                for (const rt of Object.keys(nodeIncoming[node.id])) {
+                    nodeIncoming[node.id][rt as ResourceType] = safeDecimal(0);
                 }
             }
         }
 
-        let selectedRecipe = recipes[0];
-        let reqAmtPerCraft = new Decimal(1);
-        let outputPerCraft = new Decimal(1);
-        let inTypes: string[] = [];
-        let maxCrafts = new Decimal(0);
-        let activeRecipeIndex = node.data.activeRecipeIndex || 0;
-        let inputEfficiency = new Decimal(0);
+        let selectedRecipeResult = recipes[0];
+        let outputPerCraftResult = safeDecimal(1);
+        let inTypesResult: string[] = [];
+        let maxCraftsResult = safeDecimal(0);
+        let activeRecipeIndexResult = node.data.activeRecipeIndex || 0;
+        let activeMaxIngredientsResult = safeDecimal(1);
 
         for (let i = 0; i < recipes.length; i++) {
             const r = recipes[i];
-            const inTypesCandidate = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: string) => t.trim()) : [];
-            const convRate = new Decimal(r.conversionRate);
-            const reqCandidates = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(multiplier);
-            const outCandidate = (convRate.lt(1) ? new Decimal(1) : convRate).times(multiplier);
+            const recipeIngredients = r.ingredients || [];
+            const recipeInTypes = recipeIngredients.length > 0
+                ? recipeIngredients.map((ing: any) => ing.itemId)
+                : (typeof (r.inputType || (r as any).input_type) === 'string'
+                    ? (r.inputType || (r as any).input_type).split(',').map((it: string) => it.trim())
+                    : []);
 
-            const hasSolidInput = inTypesCandidate.some(t => (RESOURCE_STATES[t] || 'solid') === 'solid');
+            const ratePerSec = safeDecimal(r.conversionRate || (r as any).conversion_rate || 1);
+            const inputAmtsMap: Record<string, Decimal> = {};
+            if (recipeIngredients.length > 0) {
+                recipeIngredients.forEach((ing: any) => { inputAmtsMap[ing.itemId] = safeDecimal(ing.amount); });
+            } else {
+                const flatAmts = (r as any).inputAmount ? String((r as any).inputAmount).split(',').map(s => safeDecimal(s.trim())) : recipeInTypes.map(() => safeDecimal(1));
+                recipeInTypes.forEach((rt: string, idx: number) => { inputAmtsMap[rt] = flatAmts[idx] || safeDecimal(1); });
+            }
 
-            let candidateCrafts = new Decimal(Infinity);
-            for (const t of inTypesCandidate) {
-                const amt = inputBufferObj[t] ? new Decimal(inputBufferObj[t] as any) : new Decimal(0);
-                const crafts = amt.dividedBy(reqCandidates);
-                const matter = RESOURCE_STATES[t] || 'solid';
-                if (matter === 'solid' || !hasSolidInput) {
-                    if (crafts.lt(candidateCrafts)) candidateCrafts = crafts;
+            let maxPossibleByIngredients = safeDecimal(Infinity);
+            for (const rt_ of recipeInTypes) {
+                if (!rt_ || rt_ === 'electricity') continue;
+                const amtAvailable = inputBufferObj[rt_] ? safeDecimal(inputBufferObj[rt_] as any) : safeDecimal(0);
+                const reqPerSec = inputAmtsMap[rt_].times(ratePerSec).times(multiplier);
+                if (reqPerSec.gt(0)) {
+                    const possibleTicks = amtAvailable.dividedBy(reqPerSec.times(dtSeconds));
+                    if (possibleTicks.lt(maxPossibleByIngredients)) maxPossibleByIngredients = possibleTicks;
                 }
             }
-            if (candidateCrafts.eq(Infinity) && inTypesCandidate.length > 0) candidateCrafts = new Decimal(0);
-            const fuelCrafts = candidateCrafts;
+            if (maxPossibleByIngredients.eq(Infinity)) maxPossibleByIngredients = safeDecimal(1);
 
-            const maxSpeedCrafts = new Decimal(dtSeconds).times(powerEfficiency);
-            if (candidateCrafts.gt(maxSpeedCrafts)) candidateCrafts = maxSpeedCrafts;
-
-            if (candidateCrafts.gt(0)) {
-                selectedRecipe = r;
-                reqAmtPerCraft = reqCandidates;
-                outputPerCraft = outCandidate;
-                inTypes = inTypesCandidate;
-                maxCrafts = candidateCrafts;
-                activeRecipeIndex = i;
-                inputEfficiency = Decimal.min(1, fuelCrafts.dividedBy(dtSeconds));
-                break;
+            const productionEfficiency = node.data?.productionEfficiency ? safeDecimal(node.data.productionEfficiency) : safeDecimal(1);
+            let craftsThisTick = Decimal.min(safeDecimal(100), Decimal.min(maxPossibleByIngredients, Decimal.min(powerEfficiency, productionEfficiency)));
+            if (craftsThisTick.gt(0) || i === recipes.length - 1) {
+                selectedRecipeResult = r;
+                activeRecipeIndexResult = i;
+                inTypesResult = recipeInTypes;
+                activeMaxIngredientsResult = maxPossibleByIngredients;
+                // Apply multiplier to production rate
+                outputPerCraftResult = ratePerSec.times(multiplier).times(dtSeconds);
+                maxCraftsResult = craftsThisTick;
+                if (craftsThisTick.gt(0)) break;
             }
         }
 
-        if (maxCrafts.eq(0)) {
-            const lastIdx = node.data.activeRecipeIndex ?? 0;
-            const r = recipes[lastIdx] || recipes[0];
-            selectedRecipe = r;
-            inTypes = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: string) => t.trim()) : [];
-            const convRate = new Decimal(r.conversionRate);
-            reqAmtPerCraft = (convRate.lt(1) ? new Decimal(1).dividedBy(convRate).round() : new Decimal(1)).times(multiplier);
-            outputPerCraft = (convRate.lt(1) ? new Decimal(1) : convRate).times(multiplier);
-            activeRecipeIndex = lastIdx;
+        const outTypeR = (selectedRecipeResult.outputType || (selectedRecipeResult as any).output_type) as ResourceType;
+        const outBufferR = node.data.outputBuffer || {};
+        const currentOutAmtR = outBufferR[outTypeR] ? safeDecimal(outBufferR[outTypeR]!) : safeDecimal(0);
+        const leftoverOutSpaceR = Decimal.max(0, safeDecimal(maxBuf).minus(currentOutAmtR));
+        // If output is electricity, ignore storage backpressure for grid supply stability
+        const maxByStorageR = (outTypeR === 'electricity')
+            ? safeDecimal(999999)
+            : (outputPerCraftResult.gt(0) ? leftoverOutSpaceR.dividedBy(outputPerCraftResult) : safeDecimal(1));
+
+        const craftsToExecuteR = Decimal.min(maxCraftsResult, maxByStorageR);
+        const actualTotalProducedR = outputPerCraftResult.times(craftsToExecuteR);
+
+        outBufferR[outTypeR] = currentOutAmtR.plus(actualTotalProducedR).toString();
+        node.data.outputBuffer = outBufferR;
+
+        const craftsRatioR = maxCraftsResult.gt(0) ? craftsToExecuteR.dividedBy(maxCraftsResult) : safeDecimal(0);
+        const inEdgesR = inEdgesByTarget[node.id] || [];
+
+        const convRateR = safeDecimal(selectedRecipeResult.conversionRate || (selectedRecipeResult as any).conversion_rate || 1);
+        const recipeIngredientsR = selectedRecipeResult.ingredients || [];
+        const usageTypeMapR: Record<string, string> = {};
+        const reqAmountMapR: Record<string, Decimal> = {};
+
+        if (recipeIngredientsR.length > 0) {
+            recipeIngredientsR.forEach((ing: any) => {
+                usageTypeMapR[ing.itemId] = ing.usageType || 'MATERIAL';
+                reqAmountMapR[ing.itemId] = safeDecimal(ing.amount);
+            });
+        } else {
+            const FUEL_RES = ['coal', 'wood_log', 'leaf', 'lava'];
+            const flatAmts = (selectedRecipeResult as any).inputAmount ? String((selectedRecipeResult as any).inputAmount).split(',').map(s => safeDecimal(s.trim())) : inTypesResult.map(() => safeDecimal(1));
+            inTypesResult.forEach((rt, idx) => {
+                usageTypeMapR[rt] = (idx > 0 && FUEL_RES.includes(rt)) ? 'FUEL' : 'MATERIAL';
+                reqAmountMapR[rt] = flatAmts[idx] || safeDecimal(1);
+            });
         }
 
-        const outType = selectedRecipe.outputType as ResourceType;
-        const availableMap: Record<string, Decimal> = {};
+        let consumedTotal = safeDecimal(0);
+        for (const rt of inTypesResult) {
+            const reqB = reqAmountMapR[rt] || safeDecimal(1);
+            const totalCons = reqB.times(convRateR).times(multiplier).times(dtSeconds).times(craftsRatioR);
+            const curA = inputBufferObj[rt] ? safeDecimal(inputBufferObj[rt] as any) : safeDecimal(0);
+            inputBufferObj[rt] = Decimal.max(0, curA.minus(totalCons)).toString();
 
-        const activeInTypes = new Set(inTypes);
-        for (let j = 0; j < recipes.length; j++) {
-            if (j !== activeRecipeIndex) {
-                const r = recipes[j];
-                const rInTypes = typeof r.inputType === 'string' ? r.inputType.split(',').map((t: string) => t.trim()) : [];
-                for (const t of rInTypes) {
-                    if (!activeInTypes.has(t) && nodeIncoming[node.id]) {
-                        nodeIncoming[node.id][t as ResourceType] = new Decimal(0);
-                    }
+            const reqAmtTick = reqB.times(convRateR).times(multiplier).times(dtSeconds);
+            const scaledMaxBufR = Decimal.max(maxBuf, reqAmtTick.times(10));
+            const bpR = curA.lt(scaledMaxBufR) ? safeDecimal(1) : safeDecimal(0);
+            const resUsage = usageTypeMapR[rt];
+
+            for (const edge of inEdgesR) {
+                const rtForE = edge.data?.resourceType || '';
+                if (rtForE !== rt) continue;
+
+                const targetH = (edge.targetHandle || '').toLowerCase();
+                const resUsage = usageTypeMapR[rt];
+
+                const isMatch = (targetH === rt.toLowerCase()) ||
+                    (targetH === 'fuel' && resUsage === 'FUEL') ||
+                    (targetH === 'material' && resUsage === 'MATERIAL') ||
+                    ((targetH === 'input' || !targetH) && resUsage === 'MATERIAL');
+
+                if (isMatch) {
+                    edgeBackpressures[edge.id] = bpR;
                 }
             }
+            addStat(ctx, 'consumption', rt as ResourceType, totalCons);
+            consumedTotal = consumedTotal.plus(totalCons);
         }
 
-        for (const t of inTypes) {
-            const amt = nodeIncoming[node.id]?.[t as ResourceType] || new Decimal(0);
-            availableMap[t] = amt;
-        }
-        const bp = getEdgeBackpressure(ctx, node.id);
-        const actualConsumeMax = maxCrafts.eq(Infinity) ? new Decimal(0) : maxCrafts;
-        const gainMax = actualConsumeMax.times(outputPerCraft);
-        const bufferObj = node.data.outputBuffer || {};
-        const bucket = bufferObj[outType] ? new Decimal(bufferObj[outType]!) : new Decimal(0);
-        const totalGainMax = bucket.plus(gainMax);
-
-        const targetEdges = outEdgesBySource[node.id] || [];
-        const edgeCount = targetEdges.length;
-
-        let pushedTotal = new Decimal(0);
-        if (isElectricityProducer) {
-            pushedTotal = gainMax;
-        } else if (edgeCount > 0) {
-            if (totalGainMax.gt(0)) {
-                const producedPerEdge = totalGainMax.dividedBy(edgeCount);
-                for (const edge of targetEdges) {
-                    const pushed = pushToEdge(ctx, edge, outType, producedPerEdge);
-                    pushedTotal = pushedTotal.plus(pushed);
-                }
-            }
-        }
-
-        const takenFromBucket = Decimal.min(bucket, pushedTotal);
-        const remainderPushed = pushedTotal.minus(takenFromBucket);
-        let actualCrafts = outputPerCraft.gt(0) ? remainderPushed.dividedBy(outputPerCraft) : new Decimal(0);
-        if (actualCrafts.gt(maxCrafts)) actualCrafts = maxCrafts;
-
-        const realConsumed = actualCrafts.times(reqAmtPerCraft);
-
-        const newBucket = bucket.minus(takenFromBucket);
-        const outputBufferStr = newBucket.toString();
-
-        const realConsumeRatio = maxCrafts.gt(0) ? actualCrafts.dividedBy(maxCrafts) : new Decimal(0);
-
-        const FUEL_RESOURCES = ['coal', 'wood_log', 'leaf', 'lava'];
-        const inEdges = inEdgesByTarget[node.id] || [];
-
-        for (const t of inTypes) {
-            const rt = t as ResourceType;
-            const currentAmt = inputBufferObj[t] ? new Decimal(inputBufferObj[t] as any) : new Decimal(0);
-            inputBufferObj[rt] = Decimal.max(0, currentAmt.minus(realConsumed)).toString();
-
-            // Calculate backpressure for this specific resource type
-            // If we have less than maxBuf, backpressure = 1 (requesting)
-            // If we are full, backpressure = 0 (blocking)
-            const bpForResource = currentAmt.lt(maxBuf) ? new Decimal(1) : new Decimal(0);
-
-            // Find edges providing this resource and update their context-specific backpressure
-            for (const edge of inEdges) {
-                const isFuelEdge = edge.targetHandle === 'fuel';
-                const resourceIsFuel = FUEL_RESOURCES.includes(rt);
-
-                if ((isFuelEdge && resourceIsFuel) || (!isFuelEdge && !resourceIsFuel)) {
-                    edgeBackpressures[edge.id] = bpForResource;
-                }
-            }
-
-            addStat(ctx, 'consumption', rt, realConsumed);
-        }
-
-        addStat(ctx, 'production', outType, pushedTotal);
         if (powerReqAmt.gt(0)) {
-            const actualEff = powerEfficiency.times(realConsumeRatio);
-            addStat(ctx, 'consumption', 'electricity', powerReqAmt.times(actualEff));
+            const currentE = inputBufferObj['electricity'] ? safeDecimal(inputBufferObj['electricity']) : safeDecimal(0);
+            const bpElec = currentE.lt(maxBuf) ? safeDecimal(1) : safeDecimal(0);
+            for (const edge of inEdgesR) {
+                if (edge.targetHandle === 'electricity' || (edge.data as any)?.resourceType === 'electricity') {
+                    edgeBackpressures[edge.id] = bpElec;
+                }
+            }
         }
 
-        const inputPerSec = dtSeconds > 0 ? realConsumed.dividedBy(dtSeconds) : new Decimal(0);
-        const smoothedInput = smoothValue(node.data.actualInputPerSec, inputPerSec, dtSeconds, 1.0);
+        delete nodeIncoming[node.id];
 
-        const outputPerSec = dtSeconds > 0 ? pushedTotal.dividedBy(dtSeconds) : new Decimal(0);
-        const smoothedOutput = smoothValue(node.data.actualOutputPerSec, outputPerSec, dtSeconds, 1.0);
+        const outTargetEdges = outEdgesBySource[node.id] || [];
+        let pT = safeDecimal(0);
+        if (outTargetEdges.length > 0 && safeDecimal(outBufferR[outTypeR] as any).gt(0)) {
+            const currentB = safeDecimal(outBufferR[outTypeR] as any);
+            const normOutRT = outTypeR.toLowerCase().replace(/[\s_]/g, '');
+            const handleEdges = outTargetEdges.filter(e => {
+                const normSrc = e.sourceHandle?.toLowerCase().replace(/[\s_]/g, '') || '';
+                return normSrc === normOutRT || !e.sourceHandle || e.sourceHandle === 'output' || e.sourceHandle === 'source';
+            });
+            pT = pushToMultipleEdges(ctx, handleEdges.length > 0 ? handleEdges : outTargetEdges, outTypeR, currentB);
+            outBufferR[outTypeR] = currentB.minus(pT).toString();
+        } else if (isElectricityProducer) {
+            pT = actualTotalProducedR;
+        }
+        addStat(ctx, 'production', outTypeR, Decimal.max(actualTotalProducedR, pT));
 
-        const effCalculated = bp.times(realConsumeRatio).times(powerEfficiency);
-        const smoothedEff = smoothValue(node.data.efficiency, effCalculated, dtSeconds, 1.0);
+        if (powerReqAmt.gt(0)) {
+            const amountToCons = powerReqAmt.times(powerEfficiency.times(craftsRatioR));
+            const curBE = inputBufferObj['electricity'] ? safeDecimal(inputBufferObj['electricity']) : safeDecimal(0);
+            if (curBE.gt(0)) {
+                const taken = Decimal.min(curBE, amountToCons);
+                inputBufferObj['electricity'] = curBE.minus(taken).toString();
+            }
+            addStat(ctx, 'consumption', 'electricity', amountToCons);
+        }
 
-        nodeDeltas[node.id] = {
-            ...nodeDeltas[node.id],
-            actualInputPerSec: smoothedInput,
-            actualOutputPerSec: smoothedOutput,
-            efficiency: smoothedEff,
+        const potentialProduction = convRateR.times(multiplier).times(dtSeconds);
+        const instantEff = potentialProduction.gt(0) ? actualTotalProducedR.dividedBy(potentialProduction) : safeDecimal(0);
+
+        const inS = dtSeconds > 0 ? actualTotalProducedR.dividedBy(dtSeconds) : safeDecimal(0);
+        const outS = dtSeconds > 0 ? Decimal.max(actualTotalProducedR, pT).dividedBy(dtSeconds) : safeDecimal(0);
+        const activeCRat = safeDecimal(selectedRecipeResult.conversionRate || (selectedRecipeResult as any).conversion_rate || 1);
+        const pS = powerGrid ? 'WIRE' : (wirelessPowerEff.gt(0) ? 'AIR' : 'NONE');
+
+        // Efficiency is throughput vs potential. 
+        // We use craftsRatioR * powerEfficiency to show if machine is bottlenecked by downstream or power.
+        // const instantEff = craftsRatioR.times(powerEfficiency); // Old calculation
+
+        nodeDelta(ctx, node.id, {
+            actualInputPerSec: smoothValue(node.data.actualInputPerSec, consumedTotal.dividedBy(dtSeconds), dtSeconds, 1.0),
+            actualOutputPerSec: smoothValue(node.data.actualOutputPerSec, outS, dtSeconds, 1.0),
+            efficiency: smoothValue(node.data.efficiency, instantEff, dtSeconds, 1.0),
             inputBuffer: inputBufferObj,
-            outputBuffer: { ...bufferObj, [outType]: outputBufferStr },
-            activeRecipeIndex,
-            inputEfficiency,
-            backpressure: realConsumeRatio.toString()
-        };
+            outputBuffer: outBufferR,
+            activeRecipeIndex: activeRecipeIndexResult,
+            backpressure: craftsRatioR.toString(),
+            debugInfo: `E:${instantEff.toFixed(2)}|MC:${maxCraftsResult.toFixed(2)}|MS:${maxByStorageR.toFixed(2)}|I:${activeMaxIngredientsResult.toFixed(0)}|P:${powerEfficiency.toFixed(2)}|Pw:${node.data.powerConsumption || '0'}|ST:${pS}`
+        });
     }
-}
+};
+

@@ -1,4 +1,4 @@
-import { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect } from 'reactflow';
+import type { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect } from 'reactflow';
 import { ResourceType, Decimal } from '@aligrid/engine';
 import { NodeTemplate } from '@aligrid/schema';
 
@@ -8,6 +8,14 @@ export interface RecipeConfig {
     outputType: string;
     conversionRate: string | number | Decimal;
     inputRates?: string;
+    ingredients?: Array<{ itemId: string; amount: number; usageType: string }>;
+}
+
+export interface ItemDefinition {
+    id: string;
+    name: string;
+    type: string; // SOLID, LIQUID, GAS, POWER
+    icon?: string;
 }
 
 export interface NodeData {
@@ -16,10 +24,11 @@ export interface NodeData {
     boost?: number;
     boostedCount?: number;
     debugLog?: string;
+    debugInfo?: string;
     isOff?: boolean;
     resourceType?: string;
     powerConsumption?: string | number;
-    incomingRates?: Record<string, { res: string; rate: string }>;
+    incomingRates?: Record<string, { res: string; rate: string } | Array<{ res: string; rate: string }>>;
     recipes?: RecipeConfig[];
     recipe?: RecipeConfig;
     buffer?: string | number | Decimal;
@@ -40,11 +49,12 @@ export interface NodeData {
     width?: number;
     height?: number;
     tier?: number;
-    outputRate?: number;
+    outputRate?: number | string | Decimal;
     efficiency?: number | Decimal | string;
     inputEfficiency?: Decimal | string;
     activeRecipeIndex?: number;
     inputBuffer?: Partial<Record<string, number | Decimal | string>>;
+    inputRates?: Partial<Record<string, number | Decimal | string>>;
     outputBuffer?: Partial<Record<string, number | Decimal | string>>;
     label?: string;
     color?: string;
@@ -54,13 +64,18 @@ export interface NodeData {
     channel?: number;
     handleFlows?: Record<string, string>;
     handleResourceTypes?: Record<string, string>;
+    cloudReserve?: string | number | Decimal;
+    cloudReservePercent?: number;
+    requiresPower?: boolean;
 }
 
 export type RFState = {
     nodes: Node<NodeData>[];
     edges: Edge[];
-    cloudStorage: Partial<Record<ResourceType, Decimal>>;
+    cloudStorage: Partial<Record<string, string | Decimal>>;
     cloudLevel: number;
+    getCloudAmount: (res: string) => Decimal;
+    getCloudCapacity: (level?: number) => Decimal;
     onNodesChange: OnNodesChange;
     onEdgesChange: OnEdgesChange;
     onConnect: OnConnect;
@@ -78,11 +93,14 @@ export type RFState = {
     saveStateToServer: () => Promise<void>;
     loadStateFromServer: () => Promise<void>;
     tick: (dtSeconds: number) => void;
+    applyTickResults: (results: any) => void;
+    setInteractionMode: (mode: 'select' | 'demolish') => void;
+    getCloudUpgradeCost: (level?: number) => Record<string, Decimal>;
     globalStats?: {
-        production: Partial<Record<ResourceType, Decimal>>;
-        consumption: Partial<Record<ResourceType, Decimal>>;
-        cloudProduction?: Partial<Record<ResourceType, Decimal>>;
-        cloudConsumption?: Partial<Record<ResourceType, Decimal>>;
+        production: Partial<Record<string, string | Decimal>>;
+        consumption: Partial<Record<string, string | Decimal>>;
+        cloudProduction?: Partial<Record<string, string | Decimal>>;
+        cloudConsumption?: Partial<Record<string, string | Decimal>>;
     };
     edgeTiers: Record<string, number>;
     upgradeEdgeTier: (matter: 'solid' | 'liquid' | 'gas' | 'power') => void;
@@ -99,8 +117,38 @@ export type RFState = {
     isSidebarOpen: boolean;
     setIsSidebarOpen: (val: boolean) => void;
     nodeStats: Record<string, Partial<NodeData>>;
+    edgeStats: Record<string, Partial<FlowEdgeData>>;
+    interactionMode: 'select' | 'demolish';
+    flushNode: (nodeId: string) => void;
+    uiTickCount: number;
+    incrementUiTickCount: () => void;
+    itemRegistry: Record<string, ItemDefinition>;
+    loadItems: () => Promise<void>;
+    // Settings
+    settings: SettingsState;
+    updateSettings: (newSettings: Partial<SettingsState>) => void;
+    isSettingsOpen: boolean;
+    setIsSettingsOpen: (val: boolean) => void;
 };
+
+export interface SettingsState {
+    fpsLimit: number;
+    animationsEnabled: boolean;
+    showDebugInfo: boolean;
+    autoSaveInterval: number;
+    compactMode: boolean;
+}
 
 export interface FlowEdgeData {
     flow?: number | string | Decimal;
+    actualFlow?: number | string | Decimal;
+    tier?: number;
+    isBottleneck?: boolean;
+    backpressureRate?: string;
+    isTripped?: boolean;
+    resourceType?: string;
+    capacity?: string | number;
+    isOverloaded?: boolean;
+    duration?: number;
+    className?: string;
 }

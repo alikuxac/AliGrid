@@ -1,17 +1,25 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { bearerAuth } from 'hono/bearer-auth';
 import { drizzle } from 'drizzle-orm/d1';
-import { nodeTemplates, nodeRecipes, recipes, recipeIngredients, recipeOutputs, edgeUpgradeCosts } from './db/schema';
+import { nodeTemplates, nodeRecipes, recipes, recipeIngredients, recipeOutputs, edgeUpgradeCosts, items } from './db/schema';
 
 export interface Env {
     ALIGRID_KV: KVNamespace;
     ALIGRID_DB: D1Database;
+    API_KEY: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
 
 // Enable CORS
 app.use('*', cors());
+
+// Bearer Auth for all API routes
+app.use('/api/*', async (c, next) => {
+    const auth = bearerAuth({ token: c.env.API_KEY });
+    return auth(c, next);
+});
 
 const SAVE_KEY = "SINGLE_PLAYER_SAVE";
 
@@ -60,15 +68,19 @@ app.get('/api/nodes', async (c) => {
 
                     const ingredients = rIngredients
                         .filter(ri => ri.recipeId === recipe.id && ri.sinceVersionId === recipe.sinceVersionId)
-                        .map(ri => ri.itemId)
-                        .join(',');
+                        .map(ri => ({
+                            itemId: ri.itemId,
+                            amount: ri.amount,
+                            usageType: ri.usageType || 'MATERIAL'
+                        }));
 
                     const output = rOutputs.find(ro => ro.recipeId === recipe.id && ro.sinceVersionId === recipe.sinceVersionId);
 
                     return {
                         id: recipe.id,
                         name: recipe.name,
-                        inputType: ingredients,
+                        ingredients, // New structured format
+                        inputType: ingredients.map(i => i.itemId).join(','), // Maintain backward compatibility for simple UI
                         outputType: output?.itemId || '',
                         conversionRate: output?.amount || 1,
                         duration: recipe.durationSeconds,
@@ -95,6 +107,17 @@ app.get('/api/edge-costs', async (c) => {
     try {
         const db = drizzle(c.env.ALIGRID_DB);
         const results = await db.select().from(edgeUpgradeCosts);
+        return c.json(results);
+    } catch (err: any) {
+        return c.json({ error: err.message }, 500);
+    }
+});
+
+// Get Item Definitions
+app.get('/api/items', async (c) => {
+    try {
+        const db = drizzle(c.env.ALIGRID_DB);
+        const results = await db.select().from(items);
         return c.json(results);
     } catch (err: any) {
         return c.json({ error: err.message }, 500);

@@ -1,6 +1,6 @@
 {
     "name": "aligrid",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "private": true,
     "scripts": {
         "build": "turbo run build",
@@ -13,6 +13,6 @@
     "license": "ISC",
     "dependencies": {},
     "devDependencies": {
-        "turbo": "^2.1.0"
+        "turbo": "^2.8.21"
     }
 }

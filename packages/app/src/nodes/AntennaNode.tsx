@@ -1,121 +1,171 @@
-import React, { memo } from 'react';
-import { Handle, Position, useEdges } from 'reactflow';
+import { Handle, NodeProps, Position, useViewport } from 'reactflow';
 import { RESOURCE_REGISTRY, Decimal, ResourceType } from '@aligrid/engine';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
 import { useStore } from '../store';
+import { CLOUD_BASE_CAPACITY, CLOUD_CAPACITY_GROWTH } from '../store/constants';
 
 import type { NodeData } from '../store/types';
+import { memo, useEffect, useRef, useMemo } from 'react';
 
-export interface AntennaNodeProps {
-    id: string;
-    data: NodeData;
-}
+const AntennaNodeComponent = ({ id, data, selected }: NodeProps<NodeData>) => {
+    const { zoom } = useViewport();
+    const compactMode = useStore(state => state.settings.compactMode);
+    const showDetail = zoom > 0.6 && !compactMode;
+    const rateRefs = useRef<Record<string, HTMLSpanElement>>({});
+    const fullRefs = useRef<Record<string, HTMLSpanElement>>({});
+    const statusTextRef = useRef<HTMLSpanElement>(null);
 
-export const AntennaNode: React.FC<AntennaNodeProps> = memo(({ id, data }) => {
-    const stats = useStore((state) => state.nodeStats[id]);
-    const liveData = { ...data, ...stats };
     const cloudLevel = useStore((state) => state.cloudLevel || 1);
-    const cloudStorage = useStore((state) => state.cloudStorage || {});
-    const capacity = new Decimal(5000).times(Math.pow(2, (cloudLevel || 1) - 1));
-    const allEdges = useEdges();
-    const connectedInputs = allEdges.filter((e) => e.target === id).length;
-    const visibleInputs = Math.min(Math.max(connectedInputs + 1, 1), 5);
+    const capacity = new Decimal(CLOUD_BASE_CAPACITY).times(Math.pow(CLOUD_CAPACITY_GROWTH, (cloudLevel || 1) - 1));
 
-    const status = liveData?.status || 'idle';
-    const borderColor = status === 'active' ? '#22c55e' : '#14b8a6'; // active green, idle teal
+    // Structural subscription: only re-render if edges targeting THIS node change
+    const incomingEdgesCount = useStore(state => state.edges.filter(e => e.target === id).length);
+    const visibleInputs = Math.min(Math.max(incomingEdgesCount + 1, 1), 5);
+
+    useEffect(() => {
+        const unsubscribe = useStore.subscribe(
+            state => ({ stats: state.nodeStats?.[id], cloud: state.cloudStorage, allEdges: state.edges }),
+            ({ stats, cloud, allEdges }) => {
+                if (!stats) return;
+                try {
+                    if (statusTextRef.current) {
+                        statusTextRef.current.innerText = (stats.status || 'idle').toUpperCase();
+                    }
+
+                    for (let i = 0; i < visibleInputs; i++) {
+                        const handleId = `input-${i}`;
+                        const target = rateRefs.current[handleId];
+                        if (!target) continue;
+
+                        const rate = parseFloat(stats.handleFlows?.[handleId] || '0');
+                        const resNameInput = stats.handleResourceTypes?.[handleId];
+
+                        // Try to discover resource type from edge if not in stats
+                        let resName = resNameInput;
+                        if (!resName) {
+                            const edge = allEdges.find(e => e.target === id && e.targetHandle === handleId);
+                            if (edge) {
+                                resName = (edge.data as any)?.resourceType;
+                            }
+                        }
+
+                        if (resName) {
+                            const meta = RESOURCE_REGISTRY[resName];
+                            const label = meta ? meta.label : resName.charAt(0).toUpperCase() + resName.slice(1);
+                            target.innerText = `${label} - ${rate.toFixed(1)}/s`;
+                        } else {
+                            target.innerText = `Line ${i + 1} - 0.0/s`;
+                        }
+
+                        const fullBadge = fullRefs.current[handleId];
+                        if (fullBadge && resName) {
+                            const isFull = new Decimal(cloud[resName] || 0).gte(capacity);
+                            fullBadge.style.display = isFull ? 'inline-block' : 'none';
+                        }
+                    }
+                } catch (e) { }
+            }
+        );
+        return unsubscribe;
+    }, [id, visibleInputs, capacity]);
+
+    const status = data.status || 'idle';
+    const accentColor = status === 'active' ? '#14b8a6' : '#94a3b8';
+
+    const nodeStyles = useMemo(() => ({
+        '--node-accent': accentColor,
+    } as React.CSSProperties), [accentColor]);
+
+    if (!showDetail) {
+        return (
+            <div className="glass-node" style={{ ...nodeStyles, width: '64px', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ fontSize: '32px' }}>📡</div>
+                {Array.from({ length: visibleInputs }, (_, i) => (
+                    <Handle
+                        key={`input-${i}`}
+                        type="target"
+                        position={Position.Left}
+                        id={`input-${i}`}
+                        style={{
+                            left: '-4px',
+                            top: visibleInputs > 1 ? `${(i / (visibleInputs - 1)) * 44 + 10}px` : '32px',
+                            background: '#14b8a6',
+                            width: '8px',
+                            height: '8px',
+                            border: '1.5px solid #0d1122'
+                        }}
+                    />
+                ))}
+            </div>
+        );
+    }
 
     return (
-        <div style={{
-            background: '#161b2e', // Unified dark background
-            border: `1px solid ${borderColor}aa`,
-            borderRadius: '6px',
-            minWidth: '220px',
-            color: '#e2e8f0',
-            fontFamily: 'monospace',
-            overflow: 'visible',
-            boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.4)',
-            position: 'relative',
-        }}>
+        <div className="glass-node" style={{ ...nodeStyles, minWidth: '240px', padding: '16px' }}>
             {/* Header */}
-            <div style={{
-                background: 'rgba(20, 184, 166, 0.1)', // transparent teal tint
-                padding: '8px 12px',
-                borderBottom: `1px solid ${borderColor}aa`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                fontSize: '12px'
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '14px' }}>📡</span>
-                    <span style={{ fontWeight: 'bold', color: '#5eead4' }}>Uploader</span>
+            <div className="node-header">
+                <div className="node-icon-ring" style={{ background: `linear-gradient(135deg, rgba(20, 184, 166, 0.2), transparent)` }}>
+                    📡
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <span style={{ fontSize: '9px', padding: '2px 5px', background: status === 'active' ? '#059669' : '#0f766e', borderRadius: '4px', fontWeight: 'bold', color: '#f8fafc' }}>{status.toUpperCase()}</span>
+                <div className="node-title-group">
+                    <div className="node-title">{data?.label || 'Uploader'}</div>
+                    <div className="node-level">Cloud Sync Node</div>
+                </div>
+                <div style={{ marginLeft: 'auto' }}>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
             </div>
 
-            {/* Body */}
-            <div style={{ padding: '10px 12px', fontSize: '11px', color: '#a7f3d0', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {/* Status bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: '8px', marginBottom: '12px' }}>
+                <div className={`status-dot ${status === 'active' ? 'status-active' : ''}`} />
+                <span ref={statusTextRef} style={{ fontSize: '10px', fontWeight: 'bold', color: '#f8fafc', letterSpacing: '0.05em' }}>
+                    {status.toUpperCase()}
+                </span>
+                <span style={{ fontSize: '10px', color: '#64748b', marginLeft: 'auto' }}>Cloud Lvl {cloudLevel}</span>
+            </div>
 
-                {/* Inputs List */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <div style={{ color: '#14b8a6', fontSize: '9px', marginBottom: '2px' }}>INPUTS:</div>
-                    {Array.from({ length: visibleInputs }, (_, i) => {
-                        const handleId = `input-${i}`;
-                        const handleFlowRate = liveData?.handleFlows?.[handleId];
-                        const handleRes = liveData?.handleResourceTypes?.[handleId];
-                        const rateInfo = handleFlowRate && handleRes ? { res: handleRes, rate: handleFlowRate } : liveData?.incomingRates?.[handleId];
-
-                        let fallbackRes: string | undefined = undefined;
-                        if (!rateInfo) {
-                            const edge = allEdges.find(e => e.target === id && e.targetHandle === handleId);
-                            if (edge) {
-                                const nodes = useStore.getState().nodes;
-                                const srcNode = nodes.find((n) => n.id === edge.source);
-                                if (srcNode) {
-                                    if (srcNode.data?.resourceType) fallbackRes = srcNode.data.resourceType;
-                                    else if (srcNode.data?.recipe?.outputType) fallbackRes = srcNode.data.recipe.outputType;
-                                    else if (srcNode.data?.recipes && Array.isArray(srcNode.data.recipes)) {
-                                        const activeIdx = srcNode.data.activeRecipeIndex || 0;
-                                        fallbackRes = srcNode.data.recipes[activeIdx]?.outputType;
-                                    }
-                                }
-                            }
-                        }
-
-                        const currentRes = rateInfo?.res || fallbackRes;
-                        const icon = currentRes ? RESOURCE_REGISTRY[currentRes]?.icon || '❓' : '📤';
-                        const label = rateInfo
-                            ? `${rateInfo.res.charAt(0).toUpperCase() + rateInfo.res.slice(1)} - ${parseFloat(rateInfo.rate).toFixed(1)}/s`
-                            : (fallbackRes ? `${fallbackRes.charAt(0).toUpperCase() + fallbackRes.slice(1)} - 0.0/s` : `Line ${i + 1}`);
-                        const isFull = currentRes && new Decimal(cloudStorage[currentRes as ResourceType] || 0).gte(capacity);
-
-                        return (
-                            <div key={handleId} style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative', height: '16px', color: '#e2e8f0', justifyContent: 'space-between' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    <Handle
-                                        type="target"
-                                        position={Position.Left}
-                                        id={handleId}
-                                        style={{ left: '-16px', background: '#14b8a6', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                    />
-                                    <span style={{ fontSize: '12px' }}>{icon}</span>
-                                    <span style={{ color: isFull ? '#64748b' : '#e2e8f0' }}>{label}</span>
-                                </div>
-                                {isFull && (
-                                    <span style={{ fontSize: '9px', background: '#dc2626', color: 'white', padding: '1px 4px', borderRadius: '3px', fontWeight: 'bold' }}>FULL</span>
-                                )}
+            {/* Inputs Section */}
+            <div className="resource-section-title">Inbound Channels</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {Array.from({ length: visibleInputs }, (_, i) => {
+                    const handleId = `input-${i}`;
+                    return (
+                        <div key={handleId} className="resource-card" style={{ borderLeft: '2px solid #14b8a6' }}>
+                            <Handle
+                                type="target"
+                                position={Position.Left}
+                                id={handleId}
+                                style={{ left: '-20px', background: '#14b8a6', width: '10px', height: '10px', border: '2px solid #0d1122' }}
+                            />
+                            <div className="resource-info">
+                                <div className="resource-name">📤 <span ref={el => { if (el) rateRefs.current[handleId] = el; }}>Channel {i + 1}</span></div>
+                                <span
+                                    ref={el => { if (el) fullRefs.current[handleId] = el; }}
+                                    style={{
+                                        fontSize: '9px',
+                                        background: '#dc2626',
+                                        color: 'white',
+                                        padding: '1px 5px',
+                                        borderRadius: '4px',
+                                        fontWeight: '900',
+                                        display: 'none',
+                                        boxShadow: '0 0 10px rgba(220, 38, 38, 0.4)'
+                                    }}
+                                >
+                                    FULL
+                                </span>
                             </div>
-                        );
-                    })}
-                </div>
+                        </div>
+                    );
+                })}
+            </div>
 
-                <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '6px', textAlign: 'center', fontSize: '10px', color: '#94a3b8' }}>
-                    Uploading Cloud Backup ({connectedInputs} Connectors)
-                </div>
+            <div style={{ marginTop: '12px', textAlign: 'center', fontSize: '10px', color: '#64748b', fontStyle: 'italic' }}>
+                Active Cloud Interface ({incomingEdgesCount} connected)
             </div>
         </div>
     );
-});
+};
+
+export const AntennaNode = memo(AntennaNodeComponent);

@@ -38,16 +38,17 @@ export const FALLBACK_NODES = [
     { id: 'powerPole', name: 'Power Pole', category: 'power', icon: '🗼', radius: 200, style_bg: '#1e1b4b' },
     { id: 'amplifier', name: 'Amplifier', category: 'power', icon: '🚀', radius: 150, powerConsumption: '10', style_bg: '#312e81' },
     { id: 'tree', name: 'Tree', category: 'generator', icon: '🌳', resource_type: 'wood_log,leaf', initial_rate: '1.0', power_demand: '0', style_bg: '#065f46' },
-    { id: 'cobbleGen', name: 'Cobblestone Gen', category: 'processor', icon: '🧱', input_type: 'water,lava,electricity', output_type: 'cobblestone', conversion_rate: '1.0', style_bg: '#4b5563' },
-    { id: 'autoHammerGravel', name: 'Auto Hammer (Gravel)', category: 'processor', icon: '🔨', input_type: 'cobblestone,electricity', output_type: 'gravel', conversion_rate: '1.0', style_bg: '#374151' },
-    { id: 'autoHammerSand', name: 'Auto Hammer (Sand)', category: 'processor', icon: '🔨', input_type: 'gravel,electricity', output_type: 'sand', conversion_rate: '1.0', style_bg: '#374151' },
-    { id: 'autoSieve', name: 'Auto Sieve', category: 'processor', icon: '🕸️', input_type: 'gravel,electricity', output_type: 'iron_piece', conversion_rate: '0.25', style_bg: '#1e1b4b' },
+    { id: 'cobbleGen', name: 'Cobblestone Gen', category: 'processor', icon: '🧱', input_type: 'water,lava,electricity', output_type: 'cobblestone', power_demand: '2', conversion_rate: '1.0', style_bg: '#4b5563' },
+    { id: 'autoHammerGravel', name: 'Auto Hammer (Gravel)', category: 'processor', icon: '🔨', input_type: 'cobblestone,electricity', output_type: 'gravel', power_demand: '2', conversion_rate: '1.0', style_bg: '#374151' },
+    { id: 'autoHammerSand', name: 'Auto Hammer (Sand)', category: 'processor', icon: '🔨', input_type: 'gravel,electricity', output_type: 'sand', power_demand: '2', conversion_rate: '1.0', style_bg: '#374151' },
+    { id: 'autoSieve', name: 'Auto Sieve', category: 'processor', icon: '🕸️', input_type: 'sand,electricity', output_type: 'iron_ore', power_demand: '4', conversion_rate: '0.25', style_bg: '#1e1b4b' },
     { id: 'sink', name: 'Recycler', category: 'storage', icon: '🗑️', style_bg: '#1e3a8a', maxBuffer: 'Infinity' },
     {
         id: 'composter',
         name: 'Composter',
         category: 'processor',
-        icon: '🧫',
+        power_demand: '0',
+        requires_power: 0,
         recipes: [
             { inputType: 'leaf,water', outputType: 'compost', conversionRate: '1.0' }
         ],
@@ -61,6 +62,8 @@ export const FALLBACK_NODES = [
         recipes: [
             { inputType: 'compost,water', outputType: 'plant_fiber', conversionRate: '1.0' }
         ],
+        power_demand: '0',
+        requires_power: 0,
         style_bg: '#16a34a'
     },
     {
@@ -71,6 +74,8 @@ export const FALLBACK_NODES = [
         recipes: [
             { inputType: 'plant_fiber,water', outputType: 'bioplastic', conversionRate: '1.0' }
         ],
+        power_demand: '0',
+        requires_power: 0,
         style_bg: '#15803d'
     },
     {
@@ -81,8 +86,8 @@ export const FALLBACK_NODES = [
         recipes: [
             { inputType: 'wood_log', outputType: 'wood_plank', conversionRate: '2.0' }
         ],
+        power_demand: 0,
+        requires_power: 0,
         style_bg: '#8b5a2b'
     },
-    { id: 'woodenStorage', name: 'Wooden Storage', category: 'storage', icon: '📦', radius: 100, maxBuffer: 1000, style_bg: '#78350f' },
-    { id: 'woodenPole', name: 'Wooden Pole', category: 'power', icon: '🗼', radius: 120, style_bg: '#78350f' }
 ];

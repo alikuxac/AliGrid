@@ -1,24 +1,57 @@
-import React, { memo } from 'react';
-import { Handle, Position, useEdges } from 'reactflow';
-import { useStore } from '../store';
+import React, { memo, useEffect, useRef, useMemo } from 'react';
+import { Handle, Position, NodeProps, useViewport } from 'reactflow';
+import { RESOURCE_REGISTRY, ResourceType } from '@aligrid/engine';
+import { useStore, RFState } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
-import { RESOURCE_REGISTRY, Decimal } from '@aligrid/engine';
+import type { NodeData } from '../store/types';
 
-import type { NodeData, FlowEdgeData } from '../store/types';
+const DEFAULT_RATIOS = [1, 1];
 
-export interface SplitterNodeProps {
-    id: string;
-    data: NodeData;
-}
-
-export const SplitterNode: React.FC<SplitterNodeProps> = memo(({ id, data }) => {
-    const stats = useStore((state) => state.nodeStats[id]);
-    const liveData = { ...data, ...stats };
-    const allEdges = useEdges();
-    const ratios = liveData?.ratios || [1, 1];
-    const maxOutputs = 2;
-    const totalRatio = ratios.reduce((s, r) => s + r, 0);
+const SplitterNodeComponent = ({ id, data, selected }: NodeProps<NodeData>) => {
+    const { zoom } = useViewport();
     const updateNodeData = useStore((s) => s.updateNodeData);
+
+    const inFlowRef = useRef<HTMLSpanElement>(null);
+    const outFlowRefs = useRef<Record<string, HTMLSpanElement>>({});
+    const targetRateRefs = useRef<Record<string, HTMLSpanElement>>({});
+
+    const ratios = useStore((state: RFState) => state.nodes.find(node => node.id === id)?.data?.ratios) || DEFAULT_RATIOS;
+    const compactMode = useStore(state => state.settings.compactMode);
+    const showDetail = zoom > 0.6 && !compactMode;
+
+    useEffect(() => {
+        const unsubscribe = useStore.subscribe(
+            state => state.nodeStats?.[id],
+            (stats) => {
+                if (!stats) return;
+                try {
+                    const inputFlow = parseFloat(stats.handleFlows?.['input'] || '0');
+                    if (inFlowRef.current) {
+                        inFlowRef.current.innerText = inputFlow > 0 ? `${inputFlow.toFixed(1)}/s` : '0/s';
+                    }
+
+                    const totalRatio = ratios.reduce((a, b) => a + b, 0);
+                    ratios.forEach((r, i) => {
+                        const handleId = `output-${i}`;
+                        const el = outFlowRefs.current[handleId];
+                        if (el) {
+                            const handleFlow = parseFloat(stats.handleFlows?.[handleId] || '0');
+                            el.innerText = handleFlow > 0 ? `${handleFlow.toFixed(1)}/s` : '0.0/s';
+                        }
+
+                        const targetEl = targetRateRefs.current[handleId];
+                        if (targetEl) {
+                            const targetRate = totalRatio > 0 ? (inputFlow * r) / totalRatio : 0;
+                            const pct = totalRatio > 0 ? ((r / totalRatio) * 100).toFixed(0) : '0';
+                            targetEl.innerText = `Target: ${targetRate.toFixed(1)} (${pct}%)`;
+                        }
+                    });
+                } catch (e) { }
+            }
+        );
+        return unsubscribe;
+    }, [id, ratios]);
 
     const handleRatioChange = (index: number, value: string) => {
         const num = Math.max(parseInt(value, 10) || 0, 0);
@@ -27,161 +60,134 @@ export const SplitterNode: React.FC<SplitterNodeProps> = memo(({ id, data }) => 
         updateNodeData(id, { ratios: newRatios });
     };
 
-    const inEdge = allEdges.find(e => e.target === id && e.targetHandle === 'input');
-    let inputRes: string | undefined = undefined;
-    if (inEdge) {
-        const nodes = useStore.getState().nodes || [];
-        const srcNode = nodes.find((n) => n.id === inEdge.source);
-        if (srcNode) {
-            if (srcNode.data?.resourceType) inputRes = srcNode.data.resourceType;
-            else if (srcNode.data?.recipe?.outputType) inputRes = srcNode.data.recipe.outputType;
-        }
+    const inputRes = useStore(useShallow(state => {
+        const edges = state.edges.filter(e => e.target === id && e.targetHandle === 'input');
+        if (edges.length === 0) return undefined;
+        const e = edges[0];
+        return (state as any).edgeStats?.[e.id]?.resourceType || (e.data as any)?.resourceType;
+    }));
+    const meta = inputRes ? RESOURCE_REGISTRY[inputRes as ResourceType] : null;
+
+    const nodeStyles = useMemo(() => ({
+        '--node-accent': '#06b6d4',
+    } as React.CSSProperties), []);
+
+    if (!showDetail) {
+        return (
+            <div className="glass-node" style={{ ...nodeStyles, width: '64px', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Handle type="target" position={Position.Left} id="input" style={{ left: '-4px', top: '32px', background: '#3b82f6', width: '8px', height: '8px', border: '1.5px solid #0d1122' }} />
+                <div style={{ fontSize: '32px' }}>↗️</div>
+                {ratios.map((_, i) => (
+                    <Handle
+                        key={i}
+                        type="source"
+                        position={Position.Right}
+                        id={`output-${i}`}
+                        style={{
+                            right: '-4px',
+                            top: ratios.length === 1 ? '32px' : `${(i + 1) * (64 / (ratios.length + 1))}px`,
+                            background: '#10b981',
+                            width: '8px',
+                            height: '8px',
+                            border: '1.5px solid #0d1122'
+                        }}
+                    />
+                ))}
+            </div>
+        );
     }
-    const meta = inputRes ? RESOURCE_REGISTRY[inputRes] : null;
 
     return (
-        <div style={{
-            background: '#161b2e',
-            border: '1px solid #06b6d440',
-            borderRadius: '6px',
-            minWidth: '220px',
-            color: '#e2e8f0',
-            fontFamily: 'monospace',
-            overflow: 'visible',
-            boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.4)',
-            position: 'relative',
-        }}>
+        <div className="glass-node" style={{ ...nodeStyles, minWidth: '240px', padding: '16px' }}>
             {/* Header */}
-            <div style={{
-                background: '#1e293b',
-                padding: '8px 12px',
-                borderBottom: '1px solid #06b6d440',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                fontSize: '12px'
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '14px' }}>↗️</span>
-                    <span style={{ fontWeight: 'bold' }}>Splitter</span>
+            <div className="node-header">
+                <div className="node-icon-ring" style={{ background: `linear-gradient(135deg, rgba(6, 182, 212, 0.2), transparent)` }}>
+                    ↗️
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <div className="node-title-group">
+                    <div className="node-title">{data?.label || 'Splitter'}</div>
+                    <div className="node-level">Distribution Hub</div>
+                </div>
+                <div style={{ marginLeft: 'auto' }}>
                     <NodeHeaderMenu nodeId={id} />
                 </div>
             </div>
 
-            {/* Body */}
-            <div style={{ padding: '10px 12px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-
-                {/* Input Section */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ color: '#94a3b8', fontSize: '9px', marginBottom: '2px' }}>INPUT:</div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', height: '16px' }}>
-                        {(() => {
-                            const inEdge = allEdges.find(e => e.target === id && e.targetHandle === 'input');
-                            let inputRes: string | undefined = undefined;
-
-                            if (inEdge) {
-                                const nodes = useStore.getState().nodes || [];
-                                const srcNode = nodes.find((n) => n.id === inEdge.source);
-                                if (srcNode) {
-                                    if (srcNode.data?.resourceType) inputRes = srcNode.data.resourceType;
-                                    else if (srcNode.data?.recipe?.outputType) inputRes = srcNode.data.recipe.outputType;
-                                }
-                            }
-
-                            const meta = inputRes ? RESOURCE_REGISTRY[inputRes] : null;
-                            const icon = meta ? meta.icon : '📥';
-                            const label = meta ? meta.label : 'Full Load';
-                            const flow = inEdge?.data ? parseFloat((inEdge.data as { flow: string }).flow || '0') : 0;
-
-                            return (
-                                <>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                        <Handle
-                                            type="target"
-                                            position={Position.Left}
-                                            id="input"
-                                            style={{ left: '-16px', background: '#3b82f6', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                        />
-                                        <span style={{ fontSize: '12px' }}>{icon}</span>
-                                        <span style={{ color: meta ? meta.color : '#e2e8f0' }}>{label}</span>
-                                    </div>
-                                    {flow > 0 && <span style={{ fontSize: '9px', color: '#60a5fa' }}>{flow.toFixed(1)}{meta?.unit || ''}/s</span>}
-                                </>
-                            );
-                        })()}
-                    </div>
+            {/* Input Section */}
+            <div className="resource-section-title">Inbound Stream</div>
+            <div className="resource-card" style={{ borderLeft: `2px solid ${meta?.color || '#3b82f6'}`, marginBottom: '12px' }}>
+                <Handle type="target" position={Position.Left} id="input" style={{ left: '-20px', background: meta?.color || '#3b82f6', width: '10px', height: '10px', border: '2px solid #0d1122' }} />
+                <div className="resource-info">
+                    <span style={{ color: meta ? meta.color : '#e2e8f0' }}>{meta?.label || 'Full Load'}</span>
                 </div>
+                <span ref={inFlowRef} style={{ fontSize: '12px', color: '#60a5fa', fontWeight: '800' }}>0/s</span>
+            </div>
 
-                {/* Outputs Section */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '6px' }}>
-                    <div style={{ color: '#94a3b8', fontSize: '9px', marginBottom: '2px' }}>OUTPUTS (Ratio Distribution):</div>
-                    {ratios.map((r, i) => {
-                        const pct = totalRatio > 0 ? ((r / totalRatio) * 100).toFixed(0) : '0';
-                        return (
-                            <div key={i} style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                background: '#1e293b60',
-                                padding: '4px 6px',
-                                borderRadius: '4px',
-                                borderLeft: '2px solid #06b6d4',
-                                position: 'relative',
-                                height: 'auto',
-                                minHeight: '22px'
-                            }}>
-                                <span style={{ color: '#64748b', fontSize: '10px' }}>#{i + 1}</span>
+            {/* Outputs Section */}
+            <div className="resource-section-title">Ratio Distribution</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {ratios.map((r, i) => {
+                    const handleId = `output-${i}`;
+                    return (
+                        <div key={i} className="resource-card" style={{ borderRight: '2px solid #10b981' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                    background: 'rgba(0,0,0,0.3)',
+                                    width: '20px',
+                                    height: '20px',
+                                    borderRadius: '4px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '9px',
+                                    fontWeight: 'bold',
+                                    color: '#64748b'
+                                }}>
+                                    #{i + 1}
+                                </div>
                                 <input
                                     type="number"
                                     min="0"
                                     value={r}
                                     onChange={(e) => handleRatioChange(i, e.target.value)}
                                     style={{
-                                        width: '32px', background: '#0f172a', color: '#f8fafc',
-                                        border: '1px solid #334155', borderRadius: '3px',
-                                        padding: '1px 3px', fontSize: '10px', textAlign: 'center',
-                                        fontFamily: 'monospace'
+                                        width: '40px',
+                                        background: 'rgba(255,255,255,0.05)',
+                                        color: '#f8fafc',
+                                        border: '1px solid rgba(255,255,255,0.1)',
+                                        borderRadius: '4px',
+                                        padding: '2px 4px',
+                                        fontSize: '11px',
+                                        textAlign: 'center',
+                                        fontFamily: 'inherit'
                                     }}
                                     className="nodrag"
                                 />
-                                {(() => {
-                                    const inEdge = allEdges.find(e => e.target === id && e.targetHandle === 'input');
-                                    const inputFlow = inEdge?.data ? new Decimal((inEdge.data as { flow: string }).flow || '0') : new Decimal(0);
-                                    const targetRate = totalRatio > 0 ? inputFlow.times(r).dividedBy(totalRatio) : new Decimal(0);
-                                    const handleEdges = allEdges.filter(e => e.source === id && e.sourceHandle === `output-${i}`);
-                                    let actualFlow = 0;
-                                    for (const e of handleEdges) {
-                                        const edgeData = e.data as FlowEdgeData | undefined;
-                                        if (edgeData?.flow) actualFlow += parseFloat(edgeData.flow.toString());
-                                    }
-
-                                    const isCongested = new Decimal(actualFlow).gt(0) && new Decimal(actualFlow).lt(targetRate);
-
-                                    return (
-                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexGrow: 1 }}>
-                                            <span style={{ color: '#22d3ee', fontWeight: 'bold', fontSize: '10px' }}>
-                                                {actualFlow.toFixed(1)}{meta?.unit || ''}/s
-                                            </span>
-                                            <span style={{ color: '#94a3b8', fontSize: '8px', marginTop: '1px' }}>
-                                                Target: {targetRate.toFixed(1)} ({pct}%)
-                                            </span>
-                                        </div>
-                                    );
-                                })()}
-                                <Handle
-                                    key={`output-${i}`}
-                                    type="source"
-                                    position={Position.Right}
-                                    id={`output-${i}`}
-                                    style={{ right: '-16px', background: '#10b981', width: '8px', height: '8px', border: '1.5px solid #0a0f1d' }}
-                                />
                             </div>
-                        );
-                    })}
-                </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexGrow: 1 }}>
+                                <div ref={el => { if (el) outFlowRefs.current[handleId] = el; }} style={{ color: '#22d3ee', fontWeight: '800', fontSize: '11px' }}>
+                                    0.0/s
+                                </div>
+                                <div ref={el => { if (el) targetRateRefs.current[handleId] = el; }} style={{ color: '#64748b', fontSize: '8px' }}>
+                                    Target: 0.0 (0%)
+                                </div>
+                            </div>
+                            <Handle
+                                key={handleId}
+                                type="source"
+                                position={Position.Right}
+                                id={handleId}
+                                style={{ right: '-20px', background: '#10b981', width: '10px', height: '10px', border: '2px solid #0d1122' }}
+                            />
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );
+};
+
+export const SplitterNode = memo(SplitterNodeComponent, (prev, next) => {
+    return prev.id === next.id && prev.selected === next.selected;
 });
+

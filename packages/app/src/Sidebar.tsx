@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { memo, useEffect, useRef } from 'react';
 import { useStore } from './store';
 import { NODE_COSTS, RESOURCE_REGISTRY, Decimal } from '@aligrid/engine';
 import { formatNumber } from './utils/formatter';
 import { EDGE_UPGRADE_COSTS } from './store/constants';
 import { FALLBACK_NODES } from './config/fallbackNodes';
+import type { NodeData } from './store/types';
 
 export const Sidebar: React.FC = () => {
     const cloudStorage = useStore((state) => state.cloudStorage);
@@ -16,11 +17,13 @@ export const Sidebar: React.FC = () => {
     const activeTab = useStore((state) => state.activeTab) || 'nodes';
     const setActiveTab = useStore((state) => state.setActiveTab);
     const globalStats = useStore((state) => state.globalStats);
-    const cloudLevel = useStore((state) => state.cloudLevel) || 1;
-    const decCap = new Decimal(5000).times(Math.pow(2, cloudLevel - 1));
-    const upgradeCloudLevel = useStore((state) => state.upgradeCloudLevel);
-
     const nodes = useStore((state) => state.nodes);
+    const getCloudCapacity = useStore((state) => state.getCloudCapacity);
+    const getCloudAmount = useStore((state) => state.getCloudAmount);
+    const getCloudUpgradeCost = useStore((state) => state.getCloudUpgradeCost);
+    const upgradeCloudLevel = useStore((state) => state.upgradeCloudLevel);
+    const cloudLevel = useStore((state) => state.cloudLevel);
+    const decCap = getCloudCapacity(cloudLevel);
 
     const categoryNames: Record<string, string> = {
         generator: "Generator",
@@ -296,7 +299,7 @@ export const Sidebar: React.FC = () => {
                             for (const [r, a] of Object.entries(dlBaseCost)) {
                                 dlCost[r] = a.times(Math.pow(3, downloaderTier as number));
                             }
-                            const dlCanAfford = Object.entries(dlCost).every(([r, a]) => (cloudStorage[r] || new Decimal(0)).gte(a));
+                            const dlCanAfford = Object.entries(dlCost).every(([r, a]) => getCloudAmount(r).gte(a));
                             const currentRate = Math.pow(2, downloaderTier as number);
                             const nextRate = Math.pow(2, (downloaderTier as number) + 1);
 
@@ -341,32 +344,16 @@ export const Sidebar: React.FC = () => {
                         <span style={{ color: 'white', fontWeight: 'bold', fontSize: '13px' }}>Storage Capacities</span>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {Object.values(RESOURCE_REGISTRY).filter(r => r.isUploadAvailable).map((meta) => {
-                            const res = meta.id;
-                            const cur = cloudStorage[res] || new Decimal(0);
-                            const percent = Math.min(100, (cur.toNumber() / decCap.toNumber()) * 100);
-
-                            return (
-                                <div key={res} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#f3f4f6' }}>
-                                            <span>{meta.icon}</span>
-                                            <span>{meta.label}</span>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ fontSize: '11px', color: '#9ca3af' }}>{formatNumber(cur)}/{formatNumber(decCap)}</span>
-                                        </div>
-                                    </div>
-                                    <div style={{ height: '4px', background: '#374151', borderRadius: '2px', overflow: 'hidden' }}>
-                                        <div style={{ width: `${percent}%`, height: '100%', background: meta.color || '#3b82f6', borderRadius: '2px' }} />
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginTop: '1px' }}>
-                                        <span style={{ color: '#10b981' }}>+{((globalStats)?.cloudProduction?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
-                                        <span style={{ color: '#f87171' }}>-{((globalStats)?.cloudConsumption?.[res] || new Decimal(0)).toNumber().toFixed(1)}{(meta as any).unit || ''}/s</span>
-                                    </div>
-                                </div>
-                            );
-                        })}
+                        {Object.values(RESOURCE_REGISTRY)
+                            .filter(r => r.isUploadAvailable)
+                            .map((meta) => (
+                                <InventoryResourceRow
+                                    key={meta.id}
+                                    meta={meta}
+                                    getCloudCapacity={getCloudCapacity}
+                                />
+                            ))
+                        }
                     </div>
 
                     {/* Level Upgrade Footer */}
@@ -379,16 +366,14 @@ export const Sidebar: React.FC = () => {
                         {/* Cost list */}
                         <div style={{ padding: '6px 8px', background: '#11182760', border: '1px solid #374151', borderRadius: '4px', fontSize: '11px' }}>
                             <div style={{ color: '#94a3b8', fontSize: '10px', marginBottom: '3px' }}>Cost to Upgrade Level:</div>
-                            {[
-                                { id: 'iron', label: 'Iron', icon: '⛏️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) },
-                                { id: 'copper', label: 'Copper', icon: '⚒️', cost: new Decimal(100).times(Math.pow(3, (cloudLevel || 1) - 1)) }
-                            ].map(item => {
-                                const cur = cloudStorage[item.id] || new Decimal(0);
-                                const isAffordable = cur.gte(item.cost);
+                            {Object.entries(getCloudUpgradeCost()).map(([res, amt]) => {
+                                const meta = RESOURCE_REGISTRY[res] || { icon: '❓', label: res };
+                                const cur = getCloudAmount(res);
+                                const isAffordable = cur.gte(amt);
                                 return (
-                                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', color: isAffordable ? '#10b981' : '#f87171', marginBottom: '2px' }}>
-                                        <span>{item.icon} {item.label}</span>
-                                        <span>{formatNumber(cur)}/{formatNumber(item.cost)}</span>
+                                    <div key={res} style={{ display: 'flex', justifyContent: 'space-between', color: isAffordable ? '#10b981' : '#f87171', marginBottom: '2px' }}>
+                                        <span>{meta.icon} {meta.label}</span>
+                                        <span>{formatNumber(cur)}/{formatNumber(amt)}</span>
                                     </div>
                                 )
                             })}
@@ -443,3 +428,60 @@ export const Sidebar: React.FC = () => {
         </aside>
     );
 };
+// --- Sub-components for performance ---
+
+const InventoryResourceRow = memo(({ meta, getCloudCapacity }: { meta: any, getCloudCapacity: (l?: number) => Decimal }) => {
+    const res = meta.id;
+    const textRef = useRef<HTMLElement>(null);
+    const barRef = useRef<HTMLDivElement>(null);
+    const prodRef = useRef<HTMLElement>(null);
+    const consRef = useRef<HTMLElement>(null);
+
+    useEffect(() => {
+        const unsubscribe = useStore.subscribe(
+            state => ({
+                amount: state.cloudStorage[res],
+                capacity: getCloudCapacity(state.cloudLevel),
+                prod: state.globalStats?.cloudProduction?.[res],
+                cons: state.globalStats?.cloudConsumption?.[res]
+            }),
+            ({ amount, capacity, prod, cons }) => {
+                const cur = new Decimal(amount || 0);
+                const cap = capacity;
+                const p = new Decimal(prod || 0);
+                const c = new Decimal(cons || 0);
+
+                if (textRef.current) textRef.current.innerText = `${formatNumber(cur)}/${formatNumber(cap)}`;
+                if (barRef.current) {
+                    const pct = Math.min(100, (cur.div(cap).toNumber() * 100));
+                    barRef.current.style.width = `${pct}%`;
+                }
+                if (prodRef.current) prodRef.current.innerText = `+${p.toNumber().toFixed(1)}${meta.unit || ''}/s`;
+                if (consRef.current) consRef.current.innerText = `-${c.toNumber().toFixed(1)}${meta.unit || ''}/s`;
+            }
+        );
+        return unsubscribe;
+    }, [res, getCloudCapacity, meta.unit]);
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#f3f4f6' }}>
+                    <span>{meta.icon}</span>
+                    <span>{meta.label}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span ref={textRef} style={{ fontSize: '11px', color: '#9ca3af' }}>0/0</span>
+                </div>
+            </div>
+            <div style={{ height: '4px', background: '#374151', borderRadius: '2px', overflow: 'hidden' }}>
+                <div ref={barRef} style={{ width: `0%`, height: '100%', background: meta.color || '#3b82f6', borderRadius: '2px' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', marginTop: '1px' }}>
+                <span ref={prodRef} style={{ color: '#10b981' }}>+0.0/s</span>
+                <span ref={consRef} style={{ color: '#f87171' }}>-0.0/s</span>
+            </div>
+        </div>
+    );
+});
+InventoryResourceRow.displayName = 'InventoryResourceRow';

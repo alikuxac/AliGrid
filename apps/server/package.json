@@ -1,14 +1,15 @@
 {
     "name": "aligrid-server",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "private": true,
     "scripts": {
         "dev": "wrangler dev",
         "deploy": "wrangler deploy",
         "db:generate": "drizzle-kit generate",
-        "db:seed:nodes": "wrangler d1 execute ALIGRID_DB --local --file=seeds/v0.1.0/nodes.sql",
-        "db:seed:edges": "wrangler d1 execute ALIGRID_DB --local --file=seeds/v0.1.0/edge_costs.sql",
-        "db:seed": "npm run db:seed:nodes && npm run db:seed:edges"
+        "db:seed:nodes": "npx wrangler d1 execute ALIGRID_DB --local --file=seeds/v0.1.0/nodes.sql",
+        "db:seed:edges": "npx wrangler d1 execute ALIGRID_DB --local --file=seeds/v0.1.0/edge_costs.sql",
+        "db:seed:items": "npx wrangler d1 execute ALIGRID_DB --local --file=seeds/v0.1.0/items.sql",
+        "db:seed": "npm run db:seed:nodes && npm run db:seed:edges && npm run db:seed:items"
     },
     "dependencies": {
         "drizzle-orm": "^0.33.0",

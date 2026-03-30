@@ -1,168 +1,150 @@
-import React, { memo } from 'react';
-import { Handle, Position } from 'reactflow';
-import { Decimal, RESOURCE_REGISTRY } from '@aligrid/engine';
-import type { ProcessorRecipe } from '@aligrid/engine';
+import React, { memo, useEffect, useRef, useMemo } from 'react';
+import { Handle, Position, NodeProps, useViewport } from 'reactflow';
+import { Decimal, RESOURCE_REGISTRY, ResourceType } from '@aligrid/engine';
 import { useStore } from '../store';
-import { Counter } from '../components/Counter';
+import { NodeHeaderMenu } from '../components/NodeHeaderMenu';
+import { safeDecimal } from '../store/slices/tick/helpers';
+import { formatNumber } from '../utils/formatter';
+import type { NodeData } from '../store/types';
 
-const RESOURCE_META: Record<string, { icon: string; label: string; color: string }> = {
-    water: { icon: '💧', label: 'Water', color: '#3b82f6' },
-    iron: { icon: '⛏️', label: 'Iron', color: '#94a3b8' },
-    copper: { icon: '⚒️', label: 'Copper', color: '#d97706' },
-    coal: { icon: '🔥', label: 'Coal', color: '#334155' },
-    electricity: { icon: '⚡', label: 'Electricity', color: '#facc15' },
-};
+export const ProcessorNode = memo(({ id, data, selected }: NodeProps<NodeData>) => {
+    const { zoom } = useViewport();
+    const compactMode = useStore(state => state.settings.compactMode);
+    const showDetail = zoom > 0.6 && !compactMode;
 
-export interface ProcessorNodeProps {
-    data: {
-        processorName: string;
-        recipe: ProcessorRecipe;
-        actualInputPerSec?: Decimal | string;
-        actualOutputPerSec?: Decimal | string;
-        isOff?: boolean;
-        status?: string;
-    };
-}
+    const inRateRef = useRef<HTMLSpanElement>(null);
+    const outRateRef = useRef<HTMLSpanElement>(null);
+    const effFillRef = useRef<HTMLDivElement>(null);
+    const effRef = useRef<HTMLSpanElement>(null);
 
-export const ProcessorNode: React.FC<ProcessorNodeProps & { id: string }> = memo(({ id, data }) => {
-    const stats = useStore((state) => state.nodeStats[id]);
-    const liveData = { ...data, ...stats };
-    const isOff = liveData?.isOff || false;
+    const isOff = useStore(state => state.nodes.find(n => n.id === id)?.data?.isOff ?? false);
+    const status = useStore(state => state.nodeStats[id]?.status || 'active');
+
+    useEffect(() => {
+        const unsubscribe = useStore.subscribe(
+            state => state.nodeStats[id],
+            (stats) => {
+                if (!stats) return;
+                const efficiency = safeDecimal(stats.efficiency || 0);
+
+                if (inRateRef.current) inRateRef.current.innerText = `${new Decimal(stats.actualInputPerSec || 0).toNumber().toFixed(1)}`;
+                if (outRateRef.current) outRateRef.current.innerText = `${new Decimal(stats.actualOutputPerSec || 0).toNumber().toFixed(1)}`;
+
+                if (effRef.current) {
+                    effRef.current.innerText = `${efficiency.times(100).toFixed(0)}%`;
+                    effRef.current.style.color = efficiency.gt(0) ? '#34d399' : '#f59e0b';
+                }
+                if (effFillRef.current) {
+                    effFillRef.current.style.width = `${efficiency.times(100).toNumber()}%`;
+                }
+            }
+        );
+        return unsubscribe;
+    }, [id]);
+
     const recipe = data?.recipe;
-    const inMeta = RESOURCE_META[recipe?.inputType] || RESOURCE_META.water;
-    const outMeta = RESOURCE_META[recipe?.outputType] || RESOURCE_META.electricity;
-    const regIn = recipe?.inputType ? RESOURCE_REGISTRY[recipe.inputType] : null;
-    const regOut = recipe?.outputType ? RESOURCE_REGISTRY[recipe.outputType] : null;
+    const inType = recipe?.inputType || 'water';
+    const outType = recipe?.outputType || 'electricity';
+    const regIn = RESOURCE_REGISTRY[inType as ResourceType] || { icon: '❓', label: inType, color: '#94a3b8' };
+    const regOut = RESOURCE_REGISTRY[outType as ResourceType] || { icon: '❓', label: outType, color: '#facc15' };
     const convRate = recipe?.conversionRate ? new Decimal(recipe.conversionRate as any).toNumber().toFixed(3) : '0';
 
-    const actualIn = liveData?.actualInputPerSec ? new Decimal(liveData.actualInputPerSec as any).toNumber().toFixed(1) : '0.0';
-    const actualOut = liveData?.actualOutputPerSec ? new Decimal(liveData.actualOutputPerSec as any).toNumber().toFixed(1) : '0.0';
+    const nodeGlowStyle = useMemo(() => ({
+        boxShadow: selected
+            ? `0 0 0 2px #3b82f6, 0 12px 40px -10px rgba(0, 0, 0, 0.8), 0 0 20px rgba(59, 130, 246, 0.4)`
+            : `0 12px 30px -10px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.1)`,
+        borderColor: selected ? '#3b82f6' :
+            status === 'warning' ? '#ef4444' :
+                status === 'idle' ? '#eab308' : 'rgba(255, 255, 255, 0.08)'
+    }), [selected, status]);
 
-    const status = liveData?.status || 'active';
-    const borderColor = status === 'warning' ? '#ef4444' : status === 'idle' ? '#eab308' : '#facc15';
+    if (!showDetail) {
+        return (
+            <div className="glass-node" style={{ width: '64px', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: selected ? '2px solid #3b82f6' : undefined }}>
+                <div style={{ fontSize: '32px' }}>{isOff ? '💤' : (data?.template?.icon || '⚙️')}</div>
+                <Handle type="target" position={Position.Left} id="input" style={{ left: '-4px', top: '32px', background: regIn.color, width: '8px', height: '8px', border: '1.5px solid #0d1122' }} />
+                <Handle type="source" position={Position.Right} id="output" style={{ right: '-4px', top: '32px', background: regOut.color, width: '8px', height: '8px', border: '1.5px solid #0d1122' }} />
+            </div>
+        );
+    }
 
     return (
-        <div style={{
-            background: '#161b2e',
-            border: `1px solid ${borderColor}cc`,
-            borderRadius: '6px',
-            minWidth: '230px',
-            color: '#e2e8f0',
-            fontFamily: 'monospace',
-            overflow: 'hidden',
-            boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.4)',
-            opacity: isOff ? 0.4 : 1,
-            filter: isOff ? 'grayscale(0.4)' : 'none',
-            transition: 'all 0.3s ease'
-        }}>
+        <div className="glass-node" style={{ ...nodeGlowStyle, minWidth: '240px', padding: '16px', opacity: isOff ? 0.8 : 1 }}>
             {/* Header */}
-            <div style={{
-                background: '#1e293b',
-                padding: '8px 12px',
-                borderBottom: '1px solid #facc1540',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                fontSize: '12px'
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '14px' }}>⚙️</span>
-                    <span style={{ textDecoration: isOff ? 'line-through' : 'none', color: isOff ? '#64748b' : '#e2e8f0' }}>{liveData?.processorName || 'Processor'}</span>
+            <div className="node-header">
+                <div className="node-icon-ring" style={{ background: `linear-gradient(135deg, ${regOut.color}33, transparent)` }}>
+                    {data?.template?.icon || '⚙️'}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <button
-                        onClick={() => {
-                            if (window.confirm('Flush all buffers for this machine?')) {
-                                useStore.getState().updateNodeData(id, { inputBuffer: {}, outputBuffer: {} });
-                            }
-                        }}
-                        style={{
-                            background: 'rgba(239, 68, 68, 0.1)',
-                            border: '1px solid #ef4444',
-                            color: '#ef4444',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            fontSize: '9px',
-                            cursor: 'pointer',
-                            fontWeight: 'bold'
-                        }}
-                    >
-                        Flush
-                    </button>
-                    <button
-                        onClick={() => useStore.getState().updateNodeData(id, { isOff: !isOff })}
-                        style={{
-                            background: isOff ? '#ef444420' : '#10b98120',
-                            border: `1px solid ${isOff ? '#ef4444' : '#10b981'}`,
-                            color: isOff ? '#ef4444' : '#10b981',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            fontSize: '9px',
-                            cursor: 'pointer',
-                            fontWeight: 'bold'
-                        }}
-                    >
-                        {isOff ? 'OFF' : 'ON'}
-                    </button>
+                <div className="node-title-group">
+                    <div className="node-title">{data?.label || data?.template?.name || 'Processor'}</div>
+                    <div className="node-level">Process Node</div>
                 </div>
-            </div>
-
-            {/* Body */}
-            <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '11px' }}>
-
-                {/* Required Input */}
-                <div style={{
-                    background: '#1e293b', padding: '8px 10px', borderRadius: '4px',
-                    borderLeft: `2px solid ${inMeta.color}`,
-                }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span>{inMeta.icon}</span>
-                            <span style={{ color: '#94a3b8' }}>Requires</span>
-                            <span style={{ color: inMeta.color, fontWeight: 'bold' }}>{inMeta.label}</span>
-                        </div>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: '#64748b' }}>Consuming</span>
-                        <span style={{ color: '#f87171', fontWeight: 'bold', fontSize: '13px' }}>-<Counter value={liveData?.actualInputPerSec || 0} /> {regIn?.unit || ''}/s</span>
-                    </div>
-                </div>
-
-                {/* Conversion Arrow */}
-                <div style={{ textAlign: 'center', color: '#64748b', fontSize: '12px' }}>
-                    × {convRate}
-                    {liveData?.boost && liveData.boost > 1 && (
-                        <span style={{ color: '#fb923c' }}> (Boost: +{(liveData.boost - 1) * 100}%)</span>
-                    )}
-                    ▼
-                </div>
-
-                {/* Output */}
-                <div style={{
-                    background: '#1e293b', padding: '8px 10px', borderRadius: '4px',
-                    borderLeft: `2px solid ${outMeta.color}`,
-                }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span>{outMeta.icon}</span>
-                            <span style={{ color: '#94a3b8' }}>Produces</span>
-                            <span style={{ color: outMeta.color, fontWeight: 'bold' }}>{outMeta.label}</span>
-                        </div>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: '#64748b' }}>Producing</span>
-                        <span style={{ color: '#4ade80', fontWeight: 'bold', fontSize: '13px' }}>+<Counter value={liveData?.actualOutputPerSec || 0} /> {regOut?.unit || ''}/s</span>
+                <div style={{ marginLeft: 'auto' }}>
+                    <div className="status-indicator">
+                        <div className={`status-dot ${isOff ? 'off' : 'on'}`}></div>
+                        <div className="status-text" style={{ color: isOff ? '#f87171' : '#34d399' }}>{isOff ? 'Disabled' : 'Active'}</div>
                     </div>
                 </div>
             </div>
 
-            {/* Handles */}
-            <Handle type="target" position={Position.Left} id="input"
-                style={{ background: '#2d3748', border: `2px solid ${inMeta.color}`, width: '12px', height: '12px', left: '-6px' }}
-            />
-            <Handle type="source" position={Position.Right} id="output"
-                style={{ background: '#2d3748', border: `2px solid ${outMeta.color}`, width: '12px', height: '12px', right: '-6px' }}
-            />
+            {/* Efficiency */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '4px' }}>
+                <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 'bold' }}>OPERATIONAL LOAD</span>
+                <span ref={effRef} style={{ fontSize: '12px', fontWeight: '800' }}>0%</span>
+            </div>
+            <div className="efficiency-bar">
+                <div ref={effFillRef} className="efficiency-fill" style={{ width: '0%', background: regOut.color }}></div>
+            </div>
+
+            {/* Conversion Path */}
+            <div className="resource-section-title">Conversion</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {/* Input Resource */}
+                <div className="resource-card" style={{ borderLeft: `2px solid ${regIn.color}`, marginBottom: '4px' }}>
+                    <div className="resource-info">
+                        <div className="resource-name">{regIn.icon} {regIn.label}</div>
+                        <div style={{ fontSize: '10px', color: '#f87171', fontWeight: '700' }}>
+                            - <span ref={inRateRef}>0.0</span> <small>{regIn.unit}/s</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div style={{ textAlign: 'center', color: '#64748b', fontSize: '10px', margin: '4px 0' }}>
+                    <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '10px', padding: '2px 8px', display: 'inline-block' }}>
+                        Yield Factor: {convRate}x
+                    </div>
+                </div>
+
+                {/* Output Resource */}
+                <div className="resource-card" style={{ borderLeft: `2px solid ${regOut.color}` }}>
+                    <div className="resource-info">
+                        <div className="resource-name">{regOut.icon} {regOut.label}</div>
+                        <div style={{ fontSize: '10px', color: '#34d399', fontWeight: '700' }}>
+                            + <span ref={outRateRef}>0.0</span> <small>{regOut.unit}/s</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Controls */}
+            <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                <button
+                    onClick={() => { if (window.confirm('Flush all buffers?')) useStore.getState().flushNode(id); }}
+                    style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#f87171', padding: '8px', borderRadius: '6px', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                    FLUSH
+                </button>
+                <button
+                    onClick={() => useStore.getState().updateNodeData(id, { isOff: !isOff })}
+                    style={{ flex: 1, background: isOff ? 'rgba(52, 211, 153, 0.1)' : 'rgba(239, 68, 68, 0.1)', border: isOff ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)', color: isOff ? '#34d399' : '#f87171', padding: '8px', borderRadius: '6px', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                    {isOff ? 'ENABLE' : 'DISABLE'}
+                </button>
+                <NodeHeaderMenu nodeId={id} />
+            </div>
+
+            <Handle type="target" position={Position.Left} id="input" style={{ left: '-20px', background: regIn.color, width: '10px', height: '10px', border: '2px solid #0d1122' }} />
+            <Handle type="source" position={Position.Right} id="output" style={{ right: '-20px', background: regOut.color, width: '10px', height: '10px', border: '2px solid #0d1122' }} />
         </div>
     );
 });

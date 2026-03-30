@@ -1,18 +1,22 @@
-import { EdgeChange, applyEdgeChanges, Connection, addEdge, Edge } from 'reactflow';
+import { addEdge, type Edge, type Connection, type EdgeChange, applyEdgeChanges } from 'reactflow';
 import { Decimal, RESOURCE_REGISTRY } from '@aligrid/engine';
 import { EDGE_UPGRADE_COSTS } from '../constants';
 import { getNodeOutputResourceType, debouncedCloudSave } from '../helpers';
 
 export const createEdgeSlice = (set: any, get: any) => ({
     edges: [],
+    edgeStats: {},
     edgeTiers: { solid: 0, liquid: 0, gas: 0, power: 0 },
     downloaderTier: 0,
     edgeUpgradeCosts: EDGE_UPGRADE_COSTS,
 
     loadEdgeUpgradeCosts: async () => {
         const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8787';
+        const API_KEY = (import.meta as any).env?.VITE_API_KEY || '';
         try {
-            const res = await fetch(`${API_BASE_URL}/api/edge-costs`);
+            const headers: Record<string, string> = {};
+            if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`;
+            const res = await fetch(`${API_BASE_URL}/api/edge-costs`, { headers });
             if (!res.ok) throw new Error("Load error");
             const data = await res.json(); // Array of { matter, item_id, amount }
 
@@ -66,7 +70,7 @@ export const createEdgeSlice = (set: any, get: any) => ({
         const sourceNode = nodes.find((n: any) => n.id === connection.source);
 
         let updatedNodes = nodes;
-        const resType = sourceNode ? getNodeOutputResourceType(sourceNode) : undefined;
+        const resType = sourceNode ? getNodeOutputResourceType(sourceNode, get().edges, nodes) : undefined;
 
         if (targetNode?.type === 'merger' && sourceNode && !targetNode.data.lockedResourceType) {
             if (resType) {
@@ -78,11 +82,12 @@ export const createEdgeSlice = (set: any, get: any) => ({
             }
         }
 
-        const isPowerNode = (n: any) => ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver'].includes(n?.type || '');
+        const isPowerNode = (n: any) => ['powerPole', 'accumulator', 'powerTransmitter', 'powerReceiver', 'hydroGenerator', 'coalPowerPlant'].includes(n?.type || '');
         const isPower = resType === 'electricity' ||
-            connection.sourceHandle?.toLowerCase().includes('electricity') ||
-            connection.targetHandle?.toLowerCase().includes('electricity') ||
-            (isPowerNode(sourceNode) && isPowerNode(targetNode));
+            connection.sourceHandle === 'electricity' ||
+            connection.targetHandle === 'electricity' ||
+            (isPowerNode(sourceNode) || isPowerNode(targetNode)) ||
+            (sourceNode?.data?.category === 'power' || targetNode?.data?.category === 'power' || targetNode?.type === 'accumulator');
         const edgeType = isPower ? 'power' : 'fluid';
         const resourceColor = resType ? RESOURCE_REGISTRY[resType]?.color : undefined;
 
@@ -101,7 +106,10 @@ export const createEdgeSlice = (set: any, get: any) => ({
             ...connection,
             type: edgeType,
             style: edgeStyle,
-            data: { tier }
+            data: {
+                tier,
+                resourceType: isPower ? 'electricity' : resType
+            }
         };
 
         set({ edges: addEdge(newConnection, edges), nodes: updatedNodes });
