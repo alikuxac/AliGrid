@@ -2,6 +2,7 @@
     "name": "aligrid",
     "version": "0.1.0",
     "private": true,
+    "packageManager": "pnpm@10.28.2",
     "scripts": {
         "build": "turbo run build",
         "dev": "turbo run dev",
@@ -11,8 +12,16 @@
     "keywords": [],
     "author": "",
     "license": "ISC",
-    "dependencies": {},
     "devDependencies": {
-        "turbo": "^2.8.21"
+        "@alikuxac/tsconfig": "^1.1.9",
+        "@eslint/js": "^10.0.1",
+        "@typescript-eslint/eslint-plugin": "^8.57.2",
+        "@typescript-eslint/parser": "^8.57.2",
+        "eslint": "^10.1.0",
+        "eslint-plugin-react": "^7.37.5",
+        "eslint-plugin-react-hooks": "^7.0.1",
+        "globals": "^17.4.0",
+        "turbo": "^2.8.21",
+        "typescript-eslint": "^8.57.2"
     }
 }

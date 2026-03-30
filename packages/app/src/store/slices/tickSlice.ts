@@ -59,10 +59,14 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
         };
 
         // 3. Conditional Node & Edge Data Update
+        // We avoid updating state.nodes/state.edges on every tick to prevent massive re-renders.
+        // Persistent data (level, position) should stay in 'nodes', 
+        // while transient data (buffers, efficiency) lives in 'nodeStats'.
         let updatedNodes = state.nodes;
         let updatedEdges = state.edges;
 
-        if (!results.isPartial) {
+        // Only sync nodes/edges if explicitly requested or on a full sync
+        if (results.forceSync || (!results.isPartial && state.uiTickCount % 60 === 0)) {
             if (resultNodes) {
                 updatedNodes = state.nodes.map(n => {
                     const resultNode = resultNodes.find((rn: any) => rn.id === n.id);
@@ -71,25 +75,9 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                             ...n,
                             data: {
                                 ...n.data,
-                                inputBuffer: resultNode.data.inputBuffer,
-                                outputBuffer: resultNode.data.outputBuffer,
-                                currentAmount: resultNode.data.currentAmount,
-                                actualInputPerSec: resultNode.data.actualInputPerSec,
-                                actualOutputPerSec: resultNode.data.actualOutputPerSec,
-                                efficiency: resultNode.data.efficiency,
-                                inputEfficiency: resultNode.data.inputEfficiency,
+                                // Only sync config/persistent fields if they differ
                                 status: resultNode.data.status,
-                                gridSupply: resultNode.data.gridSupply,
-                                gridDemand: resultNode.data.gridDemand,
-                                inputRates: resultNode.data.inputRates,
-                                handleFlows: resultNode.data.handleFlows,
-                                handleResourceTypes: resultNode.data.handleResourceTypes,
                                 boost: resultNode.data.boost,
-                                boostedCount: resultNode.data.boostedCount,
-                                powerConsumption: resultNode.data.powerConsumption,
-                                wirelessEfficiency: resultNode.data.wirelessEfficiency,
-                                productionEfficiency: resultNode.data.productionEfficiency,
-                                buffer: resultNode.data.buffer,
                             }
                         };
                     }
@@ -105,14 +93,9 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
                         return {
                             ...e,
                             className: resEdge.className,
-                            duration: resEdge.duration,
                             data: {
                                 ...e.data,
-                                actualFlow: resEdge.data.actualFlow,
                                 capacity: resEdge.data.capacity,
-                                isBottleneck: resEdge.data.isBottleneck,
-                                isOverloaded: resEdge.data.isOverloaded,
-                                isTripped: resEdge.data.isTripped,
                             }
                         };
                     }
@@ -122,8 +105,8 @@ export const createTickSlice = (set: (fn: (state: RFState) => Partial<RFState>) 
         }
 
         set(() => ({
-            nodes: updatedNodes,
-            edges: updatedEdges,
+            ...(updatedNodes !== state.nodes ? { nodes: updatedNodes } : {}),
+            ...(updatedEdges !== state.edges ? { edges: updatedEdges } : {}),
             nodeStats: incomingNodeStats,
             edgeStats: incomingEdgeStats,
             cloudStorage: currentCloud,

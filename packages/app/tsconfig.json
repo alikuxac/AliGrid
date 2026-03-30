@@ -1,5 +1,11 @@
 {
     "compilerOptions": {
+        "baseUrl": ".",
+        "paths": {
+            "@aligrid/engine": ["../engine/src/index.ts"],
+            "@aligrid/schema": ["../schema/src/index.ts"],
+            "@aligrid/ui": ["../ui/src/index.ts"]
+        },
         "target": "ES2020",
         "useDefineForClassFields": true,
         "lib": [
