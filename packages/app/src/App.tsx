@@ -123,9 +123,8 @@ function AppRenderer() {
         }
     }, [interactionMode, storeOnEdgesChange]);
 
-    const globalStats = useStore((state) => (state as any).globalStats) || { production: {}, consumption: {}, cloudProduction: {}, cloudConsumption: {} };
-    // These will be moved to subcomponents to avoid AppRenderer re-renders
-    // const decCap = getCloudCapacity(cloudLevel);
+    // Removed globalStats subscription here to prevent AppRenderer re-renders.
+    // Real-time stats are handled by sub-components or direct store access in children.
 
 
     useEffect(() => {
