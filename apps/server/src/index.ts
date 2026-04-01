@@ -15,10 +15,12 @@ const app = new Hono<{ Bindings: Env }>();
 // Enable CORS
 app.use('*', cors());
 
-// Bearer Auth for all API routes
-app.use('/api/*', async (c, next) => {
-    const auth = bearerAuth({ token: c.env.API_KEY });
-    return auth(c, next);
+app.use('/api/*', (c, next) => {
+    return bearerAuth({
+        verifyToken: async (token, c) => {
+            return token === c.env.API_KEY;
+        }
+    })(c, next);
 });
 
 const SAVE_KEY = "SINGLE_PLAYER_SAVE";

@@ -5,6 +5,10 @@
 
 A simulation and idle crafting game focused on managing an interconnected network of infinite resources. Built with a node-based architecture utilizing React Flow and a custom-designed game logic engine.
 
+> [!NOTE]
+> **Platform Support**: Currently, only the **Web version** (`apps/web`) is under active development and functional. The **Mobile** and **Desktop** (Tauri) wrappers are placeholders and currently **NOT available**.
+
+
 ---
 
 ## 🚀 Core Features
