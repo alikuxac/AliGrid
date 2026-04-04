@@ -8,5 +8,6 @@ build/
 .DS_Store
 .wrangler/
 **/src-tauri/target/
+*.log
 
 PLAN.md
