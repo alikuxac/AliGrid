@@ -12,7 +12,7 @@
         "db:seed": "npm run db:seed:nodes && npm run db:seed:edges && npm run db:seed:items"
     },
     "dependencies": {
-        "drizzle-orm": "^0.33.0",
+        "drizzle-orm": "^0.45.2",
         "hono": "^4.12.8"
     },
     "devDependencies": {
